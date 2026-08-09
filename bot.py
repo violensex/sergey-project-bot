@@ -1,7 +1,7 @@
 import asyncio
 import os
 import html
-import sqlite3
+import json
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
@@ -22,161 +22,70 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не найден в .env")
-
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-DB_FILE = "sergey_project.db"
+USERS_FILE = "users.json"
+ORDERS_FILE = "orders.json"
 
 
 # =========================================================
-# БАЗА ДАННЫХ
+# РАБОТА С ФАЙЛАМИ
 # =========================================================
 
-def get_db():
-    connection = sqlite3.connect(DB_FILE)
-    connection.row_factory = sqlite3.Row
-    return connection
+def load_json(filename, default):
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
 
 
-def init_db():
-    db = get_db()
-    cursor = db.cursor()
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            full_name TEXT NOT NULL,
-            username TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+def save_json(filename, data):
+    with open(filename, "w", encoding="utf-8") as file:
+        json.dump(
+            data,
+            file,
+            ensure_ascii=False,
+            indent=2
         )
-    """)
-
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            full_name TEXT NOT NULL,
-            username TEXT,
-            text TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    db.commit()
-    db.close()
 
 
-def save_user(user):
-    db = get_db()
+# =========================================================
+# ПОЛЬЗОВАТЕЛИ
+# =========================================================
 
-    db.execute("""
-        INSERT INTO users (user_id, full_name, username)
-        VALUES (?, ?, ?)
-        ON CONFLICT(user_id)
-        DO UPDATE SET
-            full_name = excluded.full_name,
-            username = excluded.username
-    """, (
-        user.id,
-        user.full_name,
-        user.username or ""
-    ))
+def load_users():
+    return load_json(USERS_FILE, [])
 
-    db.commit()
-    db.close()
+
+def save_user(user_id):
+    users = load_users()
+
+    if user_id not in users:
+        users.append(user_id)
+        save_json(USERS_FILE, users)
+
+
+# =========================================================
+# ЗАЯВКИ
+# =========================================================
+
+def load_orders():
+    return load_json(ORDERS_FILE, [])
 
 
 def save_order(user, order_text):
-    db = get_db()
+    orders = load_orders()
 
-    cursor = db.cursor()
+    orders.append({
+        "user_id": user.id,
+        "name": user.full_name,
+        "username": user.username or "",
+        "text": order_text
+    })
 
-    cursor.execute("""
-        INSERT INTO orders (
-            user_id,
-            full_name,
-            username,
-            text
-        )
-        VALUES (?, ?, ?, ?)
-    """, (
-        user.id,
-        user.full_name,
-        user.username or "",
-        order_text
-    ))
-
-    order_id = cursor.lastrowid
-
-    db.commit()
-    db.close()
-
-    return order_id
-
-
-def get_users():
-    db = get_db()
-
-    users = db.execute("""
-        SELECT *
-        FROM users
-        ORDER BY created_at DESC
-    """).fetchall()
-
-    db.close()
-
-    return users
-
-
-def get_orders(limit=None):
-    db = get_db()
-
-    if limit:
-        orders = db.execute("""
-            SELECT *
-            FROM orders
-            ORDER BY id DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
-    else:
-        orders = db.execute("""
-            SELECT *
-            FROM orders
-            ORDER BY id DESC
-        """).fetchall()
-
-    db.close()
-
-    return orders
-
-
-def get_user_count():
-    db = get_db()
-
-    count = db.execute("""
-        SELECT COUNT(*)
-        FROM users
-    """).fetchone()[0]
-
-    db.close()
-
-    return count
-
-
-def get_order_count():
-    db = get_db()
-
-    count = db.execute("""
-        SELECT COUNT(*)
-        FROM orders
-    """).fetchone()[0]
-
-    db.close()
-
-    return count
+    save_json(ORDERS_FILE, orders)
 
 
 # =========================================================
@@ -199,14 +108,6 @@ class AdminReplyState(StatesGroup):
 class BroadcastState(StatesGroup):
     waiting_for_message = State()
     confirmation = State()
-
-
-# =========================================================
-# ПРОВЕРКА АДМИНА
-# =========================================================
-
-def is_admin(user_id):
-    return user_id == ADMIN_ID
 
 
 # =========================================================
@@ -247,7 +148,7 @@ def main_menu():
 
 
 # =========================================================
-# НАЗАД В ГЛАВНОЕ МЕНЮ
+# КНОПКА НАЗАД
 # =========================================================
 
 def back_to_menu():
@@ -260,10 +161,6 @@ def back_to_menu():
 
     return keyboard.as_markup()
 
-
-# =========================================================
-# КНОПКА НАЗАД ПРИ ЗАЯВКЕ
-# =========================================================
 
 def order_back_button():
     keyboard = InlineKeyboardBuilder()
@@ -304,7 +201,7 @@ def order_confirmation():
 
 
 # =========================================================
-# КНОПКА ОТВЕТА АДМИНА
+# КНОПКА ОТВЕТИТЬ
 # =========================================================
 
 def admin_reply_button(user_id):
@@ -341,7 +238,7 @@ def admin_menu():
     )
 
     keyboard.button(
-        text="📋 Заявки",
+        text="📋 Последние заявки",
         callback_data="admin_orders"
     )
 
@@ -356,7 +253,15 @@ def admin_menu():
 
 
 # =========================================================
-# START
+# ПРОВЕРКА АДМИНА
+# =========================================================
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+
+# =========================================================
+# /START
 # =========================================================
 
 @dp.message(CommandStart())
@@ -364,26 +269,24 @@ async def start(message: Message, state: FSMContext):
 
     await state.clear()
 
-    save_user(message.from_user)
+    save_user(message.from_user.id)
 
     text = """
-🎓 <b>SERGEY PROJECT</b>
+🎓 SERGEY PROJECT
 
 Привет! 👋
 
 Если тебе нужен индивидуальный учебный проект, презентация или материалы для защиты — ты по адресу.
 
-Здесь всё просто: выбираешь нужный раздел, оставляешь заявку или задаёшь вопрос.
+🏫 Этот бот создан специально для учеников МБОУ-СОШ №19 г. Армавира.
 
-<b>Что здесь можно сделать?</b>
+Здесь ты можешь:
 
-📚 Оформить заявку
+📚 Оформить заявку на проект
 📦 Узнать, что входит в работу
-⭐ Посмотреть преимущества
+⭐ Посмотреть, почему выбирают нас
 💬 Ознакомиться с отзывами
-📞 Связаться со мной
-
-🤝 Общаемся на «ты», без лишней официальности.
+📞 Задать свой вопрос
 
 👇 Выбирай нужный раздел:
 """
@@ -396,11 +299,14 @@ async def start(message: Message, state: FSMContext):
 
 
 # =========================================================
-# ADMIN
+# АДМИН-ПАНЕЛЬ /admin
 # =========================================================
 
 @dp.message(Command("admin"))
-async def admin_command(message: Message, state: FSMContext):
+async def admin_command(
+    message: Message,
+    state: FSMContext
+):
 
     if not is_admin(message.from_user.id):
         await message.answer(
@@ -412,11 +318,11 @@ async def admin_command(message: Message, state: FSMContext):
 
     await message.answer(
         """
-🔐 <b>АДМИН-ПАНЕЛЬ</b>
+🔐 АДМИН-ПАНЕЛЬ
 
 Добро пожаловать в панель управления SERGEY PROJECT.
 
-👇 Выбирай нужный раздел:
+👇 Выбери нужный раздел:
 """,
         reply_markup=admin_menu(),
         parse_mode="HTML"
@@ -437,19 +343,18 @@ async def admin_stats(callback: CallbackQuery):
         )
         return
 
-    users = get_user_count()
-    orders = get_order_count()
-
-    average = round(orders / users, 2) if users else 0
+    users = load_users()
+    orders = load_orders()
 
     text = f"""
-📊 <b>СТАТИСТИКА</b>
+📊 СТАТИСТИКА
 
-👥 Пользователей: <b>{users}</b>
+👥 Пользователей: {len(users)}
 
-📚 Всего заявок: <b>{orders}</b>
+📚 Всего заявок: {len(orders)}
 
-📈 Заявок на пользователя: <b>{average}</b>
+💬 Среднее количество заявок на пользователя:
+{round(len(orders) / len(users), 2) if users else 0}
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -482,16 +387,18 @@ async def admin_users(callback: CallbackQuery):
         )
         return
 
-    users = get_users()
+    users = load_users()
 
     text = f"""
-👥 <b>ПОЛЬЗОВАТЕЛИ</b>
+👥 ПОЛЬЗОВАТЕЛИ
 
-Сейчас в базе:
+Сейчас бот знает о:
 
-<b>{len(users)}</b> пользователей.
+{len(users)} пользователях.
 
-Все пользователи сохраняются автоматически после запуска бота.
+Все пользователи автоматически добавляются в список после нажатия /start.
+
+Этот список используется для рассылки.
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -518,7 +425,7 @@ async def admin_users(callback: CallbackQuery):
 
 
 # =========================================================
-# ЗАЯВКИ
+# ПОСЛЕДНИЕ ЗАЯВКИ
 # =========================================================
 
 @dp.callback_query(F.data == "admin_orders")
@@ -531,20 +438,27 @@ async def admin_orders(callback: CallbackQuery):
         )
         return
 
-    orders = get_orders(10)
+    orders = load_orders()
 
     if not orders:
+
         text = """
-📋 <b>ЗАЯВКИ</b>
+📋 ПОСЛЕДНИЕ ЗАЯВКИ
 
 Пока заявок нет.
 """
 
     else:
 
+        recent_orders = orders[-5:]
+        recent_orders.reverse()
+
         text = "📋 <b>ПОСЛЕДНИЕ ЗАЯВКИ</b>\n\n"
 
-        for order in orders:
+        for number, order in enumerate(
+            recent_orders,
+            1
+        ):
 
             username = (
                 f"@{order['username']}"
@@ -552,18 +466,24 @@ async def admin_orders(callback: CallbackQuery):
                 else "не указан"
             )
 
-            safe_name = html.escape(order["full_name"])
-            safe_username = html.escape(username)
-            safe_text = html.escape(order["text"])
+            safe_name = html.escape(
+                order["name"]
+            )
+
+            safe_username = html.escape(
+                username
+            )
+
+            safe_text = html.escape(
+                order["text"]
+            )
 
             text += f"""
-<b>Заявка №{order['id']}</b>
-
-👤 {safe_name}
+{number}. {safe_name}
 🔗 {safe_username}
-🆔 <code>{order['user_id']}</code>
+🆔 {order['user_id']}
 
-📄 {safe_text}
+{safe_text}
 
 ━━━━━━━━━━━━━━
 """
@@ -585,7 +505,7 @@ async def admin_orders(callback: CallbackQuery):
 
 
 # =========================================================
-# РАССЫЛКА
+# НАЧАЛО РАССЫЛКИ
 # =========================================================
 
 @dp.callback_query(F.data == "admin_broadcast")
@@ -607,13 +527,13 @@ async def admin_broadcast(
 
     await callback.message.edit_text(
         """
-📢 <b>РАССЫЛКА</b>
+📢 РАССЫЛКА
 
 Отправь следующим сообщением текст, который хочешь отправить пользователям.
 
-После этого я покажу предпросмотр.
+После этого я покажу предпросмотр и попрошу подтвердить отправку.
 
-❌ Чтобы отменить — напиши <b>отмена</b>.
+❌ Чтобы отменить — напиши отмена.
 """,
         parse_mode="HTML"
     )
@@ -635,9 +555,11 @@ async def receive_broadcast(
         return
 
     if not message.text:
+
         await message.answer(
             "🙂 Для рассылки нужен обычный текст."
         )
+
         return
 
     if message.text.lower() == "отмена":
@@ -655,9 +577,9 @@ async def receive_broadcast(
         broadcast_text=message.text
     )
 
-    users_count = get_user_count()
-
-    safe_text = html.escape(message.text)
+    safe_text = html.escape(
+        message.text
+    )
 
     keyboard = InlineKeyboardBuilder()
 
@@ -679,7 +601,7 @@ async def receive_broadcast(
 
     await message.answer(
         f"""
-📢 <b>ПРЕДПРОСМОТР</b>
+📢 ПРЕДПРОСМОТР
 
 ━━━━━━━━━━━━━━
 
@@ -687,7 +609,7 @@ async def receive_broadcast(
 
 ━━━━━━━━━━━━━━
 
-👥 Получателей: <b>{users_count}</b>
+👥 Получателей: {len(load_users())}
 
 Отправить сообщение всем?
 """,
@@ -719,7 +641,7 @@ async def confirm_broadcast(
         ""
     )
 
-    users = get_users()
+    users = load_users()
 
     await callback.message.edit_text(
         "📢 <b>Рассылка началась...</b>\n\n"
@@ -730,11 +652,11 @@ async def confirm_broadcast(
     success = 0
     failed = 0
 
-    safe_text = html.escape(broadcast_text)
+    safe_text = html.escape(
+        broadcast_text
+    )
 
-    for user in users:
-
-        user_id = user["user_id"]
+    for user_id in users:
 
         if user_id == ADMIN_ID:
             continue
@@ -744,7 +666,7 @@ async def confirm_broadcast(
             await bot.send_message(
                 user_id,
                 f"""
-📢 <b>SERGEY PROJECT</b>
+📢 SERGEY PROJECT
 
 {safe_text}
 """,
@@ -756,6 +678,7 @@ async def confirm_broadcast(
             await asyncio.sleep(0.05)
 
         except Exception:
+
             failed += 1
 
     await state.clear()
@@ -769,11 +692,11 @@ async def confirm_broadcast(
 
     await callback.message.edit_text(
         f"""
-✅ <b>РАССЫЛКА ЗАВЕРШЕНА</b>
+✅ РАССЫЛКА ЗАВЕРШЕНА
 
-📨 Успешно отправлено: <b>{success}</b>
+📨 Успешно отправлено: {success}
 
-❌ Не удалось отправить: <b>{failed}</b>
+❌ Не удалось отправить: {failed}
 """,
         reply_markup=keyboard.as_markup(),
         parse_mode="HTML"
@@ -802,7 +725,6 @@ async def cancel_broadcast(
 
     await callback.message.edit_text(
         "❌ <b>Рассылка отменена.</b>",
-        reply_markup=admin_menu(),
         parse_mode="HTML"
     )
 
@@ -810,7 +732,7 @@ async def cancel_broadcast(
 
 
 # =========================================================
-# ОФОРМЛЕНИЕ ЗАЯВКИ
+# НАЧАЛО ЗАЯВКИ
 # =========================================================
 
 @dp.callback_query(F.data == "order")
@@ -819,14 +741,14 @@ async def order(
     state: FSMContext
 ):
 
-    save_user(callback.from_user)
+    save_user(callback.from_user.id)
 
     await state.set_state(
         OrderState.waiting_for_order
     )
 
     text = """
-📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
+📚 ОФОРМЛЕНИЕ ЗАЯВКИ
 
 Давай быстро разберёмся, что тебе нужно.
 
@@ -838,7 +760,7 @@ async def order(
 📅 Когда нужна работа
 📦 Что тебе требуется
 
-<b>Например:</b>
+Например:
 
 10 класс
 Физика
@@ -848,7 +770,7 @@ async def order(
 
 После этого я покажу тебе заявку перед отправкой.
 
-⚠️ Заявка никуда не отправится, пока ты сам не нажмёшь «Отправить заявку».
+⚠️ Пока ты не нажмёшь «Отправить заявку», она никуда не уйдёт.
 """
 
     await callback.message.edit_text(
@@ -870,12 +792,12 @@ async def receive_order(
     state: FSMContext
 ):
 
-    save_user(message.from_user)
+    save_user(message.from_user.id)
 
     if not message.text:
 
         await message.answer(
-            "🙂 Отправь информацию обычным текстовым сообщением.",
+            "🙂 Отправь, пожалуйста, информацию обычным текстовым сообщением.",
             reply_markup=order_back_button()
         )
 
@@ -893,19 +815,27 @@ async def receive_order(
         else "не указан"
     )
 
-    safe_name = html.escape(user.full_name)
-    safe_username = html.escape(username)
-    safe_order = html.escape(message.text)
+    safe_name = html.escape(
+        user.full_name
+    )
+
+    safe_username = html.escape(
+        username
+    )
+
+    safe_order = html.escape(
+        message.text
+    )
 
     preview = f"""
-📋 <b>ПРОВЕРЬ ЗАЯВКУ</b>
+📋 ПРОВЕРЬ ЗАЯВКУ
 
 👤 Имя: {safe_name}
 🔗 Username: {safe_username}
 
 ━━━━━━━━━━━━━━
 
-📄 <b>Данные проекта:</b>
+📄 Данные проекта:
 
 {safe_order}
 
@@ -957,25 +887,33 @@ async def send_order(
         else "не указан"
     )
 
-    safe_name = html.escape(user.full_name)
-    safe_username = html.escape(username)
-    safe_order = html.escape(order_text)
+    safe_name = html.escape(
+        user.full_name
+    )
 
-    order_id = save_order(
+    safe_username = html.escape(
+        username
+    )
+
+    safe_order = html.escape(
+        order_text
+    )
+
+    save_order(
         user,
         order_text
     )
 
     admin_text = f"""
-📥 <b>НОВАЯ ЗАЯВКА №{order_id}</b>
+📥 НОВАЯ ЗАЯВКА
 
 👤 Клиент: {safe_name}
 🔗 Username: {safe_username}
-🆔 Telegram ID: <code>{user.id}</code>
+🆔 Telegram ID: {user.id}
 
 ━━━━━━━━━━━━━━
 
-📄 <b>Заявка:</b>
+📄 Заявка:
 
 {safe_order}
 """
@@ -984,13 +922,15 @@ async def send_order(
         ADMIN_ID,
         admin_text,
         parse_mode="HTML",
-        reply_markup=admin_reply_button(user.id)
+        reply_markup=admin_reply_button(
+            user.id
+        )
     )
 
     await state.clear()
 
     text = """
-✅ <b>ЗАЯВКА ОТПРАВЛЕНА!</b>
+✅ ЗАЯВКА ОТПРАВЛЕНА!
 
 Готово! Я получил твою заявку.
 
@@ -1028,7 +968,7 @@ async def edit_order(
     )
 
     text = """
-✏️ <b>ЗАПОЛНИМ ЗАНОВО</b>
+✏️ ЗАПОЛНИМ ЗАНОВО
 
 Отправь одним сообщением:
 
@@ -1037,6 +977,8 @@ async def edit_order(
 📝 Тема проекта
 📅 Когда нужна работа
 📦 Что тебе нужно
+
+Я снова покажу тебе заявку перед отправкой.
 """
 
     await callback.message.edit_text(
@@ -1065,7 +1007,7 @@ async def cancel_order(
 
     await callback.message.edit_text(
         """
-❌ <b>ЗАЯВКА ОТМЕНЕНА</b>
+❌ ЗАЯВКА ОТМЕНЕНА
 
 Ничего страшного 🙂
 
@@ -1081,26 +1023,28 @@ async def cancel_order(
 
 
 # =========================================================
-# ЧТО ВХОДИТ В РАБОТУ
+# ЧТО ВХОДИТ
 # =========================================================
 
 @dp.callback_query(F.data == "included")
-async def included(callback: CallbackQuery):
+async def included(
+    callback: CallbackQuery
+):
 
-    save_user(callback.from_user)
+    save_user(callback.from_user.id)
 
     text = """
-📦 <b>ЧТО МОЖНО ПОЛУЧИТЬ В ЗАКАЗЕ?</b>
+📦 ЧТО МОЖНО ПОЛУЧИТЬ В ЗАКАЗЕ?
 
-📚 <b>Готовый проект</b>
+📚 Готовый проект
 
-Материал под твою тему с учётом задания и необходимых требований.
+Материал под твою тему с учетом задания и необходимых требований.
 
-📊 <b>Презентация</b>
+📊 Презентация
 
 Наглядные слайды, которые можно использовать во время защиты.
 
-🎤 <b>Материалы для выступления</b>
+🎤 Материалы для выступления
 
 Понятный текст, который поможет тебе подготовиться к защите и рассказать о своей работе.
 
@@ -1139,42 +1083,44 @@ async def included(callback: CallbackQuery):
 # =========================================================
 
 @dp.callback_query(F.data == "why")
-async def why(callback: CallbackQuery):
+async def why(
+    callback: CallbackQuery
+):
 
-    save_user(callback.from_user)
+    save_user(callback.from_user.id)
 
     text = """
-⭐ <b>ПОЧЕМУ SERGEY PROJECT?</b>
+⭐ ПОЧЕМУ SERGEY PROJECT?
 
-⏰ <b>Заранее договариваемся о сроках</b>
+⏰ Заранее договариваемся о сроках
 
 Сразу обсуждаем, к какой дате тебе понадобится готовая работа.
 
-🎯 <b>Каждая заявка рассматривается отдельно</b>
+🎯 Каждая заявка рассматривается отдельно
 
 Учитываем твою тему, предмет, класс и требования к заданию.
 
-🧩 <b>Работа под конкретную задачу</b>
+🧩 Работа под конкретную задачу
 
-Не используем один и тот же вариант для всех — ориентируемся на твоё задание.
+Не просто выдаём случайную заготовку — учитываем то, что требуется именно тебе.
 
-💬 <b>Можно связаться и задать вопрос</b>
+💬 Можно связаться и задать вопрос
 
 Если нужно что-то уточнить или изменить, всегда можно написать.
 
-🔎 <b>Внимание к требованиям</b>
+🔎 Внимание к требованиям
 
-Учитываем структуру, объём, оформление и другие условия задания.
+Учитываем структуру, объем, оформление и другие условия задания.
 
-🤝 <b>Простое общение</b>
+🏫 Для учеников МБОУ-СОШ №19
 
-Здесь не нужно писать официальным языком — общаемся нормально и на «ты».
+Бот ориентирован именно на учеников нашей школы.
 
 ━━━━━━━━━━━━━━
 
 📌 Хочешь обсудить свой проект?
 
-Оставь заявку — сначала разберёмся, что именно тебе нужно.
+Оставь заявку — сначала разберёмся, что тебе нужно.
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -1210,7 +1156,7 @@ async def contact(
     state: FSMContext
 ):
 
-    save_user(callback.from_user)
+    save_user(callback.from_user.id)
 
     await state.clear()
 
@@ -1219,15 +1165,15 @@ async def contact(
     )
 
     text = """
-📞 <b>СВЯЗАТЬСЯ С SERGEY PROJECT</b>
+📞 СВЯЗАТЬСЯ С SERGEY PROJECT
 
 Есть вопрос или хочешь что-то уточнить?
 
 Просто напиши сообщение сюда 👇
 
-💬 Можешь рассказать о своей ситуации своими словами — никаких шаблонов не нужно.
+💬 Можешь рассказать о своей ситуации своими словами — без каких-либо шаблонов.
 
-После отправки сообщение будет передано мне.
+После отправки твоё сообщение будет передано мне.
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -1247,7 +1193,7 @@ async def contact(
 
 
 # =========================================================
-# СООБЩЕНИЕ ЧЕРЕЗ "СВЯЗАТЬСЯ"
+# ПОЛУЧЕНИЕ СООБЩЕНИЯ
 # =========================================================
 
 @dp.message(ContactState.waiting_for_message)
@@ -1256,12 +1202,12 @@ async def receive_contact_message(
     state: FSMContext
 ):
 
-    save_user(message.from_user)
+    save_user(message.from_user.id)
 
     if not message.text:
 
         await message.answer(
-            "🙂 Напиши сообщение обычным текстом.",
+            "🙂 Напиши, пожалуйста, сообщение обычным текстом.",
             reply_markup=order_back_button()
         )
 
@@ -1275,20 +1221,28 @@ async def receive_contact_message(
         else "не указан"
     )
 
-    safe_name = html.escape(user.full_name)
-    safe_username = html.escape(username)
-    safe_message = html.escape(message.text)
+    safe_name = html.escape(
+        user.full_name
+    )
+
+    safe_username = html.escape(
+        username
+    )
+
+    safe_message = html.escape(
+        message.text
+    )
 
     admin_text = f"""
-💬 <b>НОВОЕ СООБЩЕНИЕ</b>
+💬 НОВОЕ СООБЩЕНИЕ
 
 👤 От: {safe_name}
 🔗 Username: {safe_username}
-🆔 Telegram ID: <code>{user.id}</code>
+🆔 Telegram ID: {user.id}
 
 ━━━━━━━━━━━━━━
 
-💬 <b>Сообщение:</b>
+💬 Сообщение:
 
 {safe_message}
 """
@@ -1297,14 +1251,16 @@ async def receive_contact_message(
         ADMIN_ID,
         admin_text,
         parse_mode="HTML",
-        reply_markup=admin_reply_button(user.id)
+        reply_markup=admin_reply_button(
+            user.id
+        )
     )
 
     await state.clear()
 
     await message.answer(
         """
-✅ <b>СООБЩЕНИЕ ОТПРАВЛЕНО!</b>
+✅ СООБЩЕНИЕ ОТПРАВЛЕНО!
 
 Я получил твоё сообщение и скоро отвечу тебе.
 
@@ -1319,20 +1275,25 @@ async def receive_contact_message(
 # ОТВЕТ ПОЛЬЗОВАТЕЛЮ
 # =========================================================
 
-@dp.callback_query(F.data.startswith("reply_"))
+@dp.callback_query(
+    F.data.startswith("reply_")
+)
 async def reply_to_user(
     callback: CallbackQuery,
     state: FSMContext
 ):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "У тебя нет доступа.",
             show_alert=True
         )
+
         return
 
     try:
+
         user_id = int(
             callback.data.split("_")[1]
         )
@@ -1358,13 +1319,13 @@ async def reply_to_user(
 
     await callback.message.answer(
         """
-💬 <b>ОТВЕТ ПОЛЬЗОВАТЕЛЮ</b>
+💬 ОТВЕТ ПОЛЬЗОВАТЕЛЮ
 
 Напиши сообщение, которое хочешь отправить.
 
 Оно будет отправлено пользователю от имени бота.
 
-❌ Чтобы отменить — напиши <b>отмена</b>.
+❌ Чтобы отменить — напиши отмена.
 """,
         parse_mode="HTML"
     )
@@ -1415,8 +1376,7 @@ async def send_admin_reply(
         await state.clear()
 
         await message.answer(
-            "❌ Не удалось определить пользователя.",
-            reply_markup=admin_menu()
+            "❌ Не удалось определить пользователя."
         )
 
         return
@@ -1430,7 +1390,7 @@ async def send_admin_reply(
         await bot.send_message(
             user_id,
             f"""
-💬 <b>Сообщение от SERGEY PROJECT</b>
+💬 Сообщение от SERGEY PROJECT
 
 {safe_message}
 
@@ -1458,13 +1418,12 @@ async def send_admin_reply(
 
 
 # =========================================================
-# АДМИН-ПАНЕЛЬ НАЗАД
+# ВОЗВРАТ В АДМИН-ПАНЕЛЬ
 # =========================================================
 
 @dp.callback_query(F.data == "admin_back")
 async def admin_back(
-    callback: CallbackQuery,
-    state: FSMContext
+    callback: CallbackQuery
 ):
 
     if not is_admin(callback.from_user.id):
@@ -1476,11 +1435,9 @@ async def admin_back(
 
         return
 
-    await state.clear()
-
     await callback.message.edit_text(
         """
-🔐 <b>АДМИН-ПАНЕЛЬ</b>
+🔐 АДМИН-ПАНЕЛЬ
 
 👇 Выбери нужный раздел:
 """,
@@ -1496,7 +1453,9 @@ async def admin_back(
 # =========================================================
 
 @dp.callback_query(F.data == "admin_close")
-async def admin_close(callback: CallbackQuery):
+async def admin_close(
+    callback: CallbackQuery
+):
 
     if not is_admin(callback.from_user.id):
 
@@ -1524,16 +1483,14 @@ async def back(
 
     await state.clear()
 
-    save_user(callback.from_user)
-
     text = """
-🎓 <b>SERGEY PROJECT</b>
+🎓 SERGEY PROJECT
 
 Снова привет! 👋
 
 Здесь ты можешь оформить заявку на индивидуальный учебный проект или посмотреть дополнительную информацию.
 
-🤝 Всё просто: выбирай нужный раздел и пиши, если появились вопросы.
+🏫 Бот создан для учеников МБОУ-СОШ №19 г. Армавира.
 
 👇 Что тебя интересует?
 """
@@ -1552,21 +1509,21 @@ async def back(
 # =========================================================
 
 @dp.message()
-async def random_message(message: Message):
+async def random_message(
+    message: Message
+):
 
-    save_user(message.from_user)
+    save_user(message.from_user.id)
 
     await message.answer(
         """
 🙂 Не совсем понял тебя.
 
-Если хочешь оформить проект — нажми:
+Если хочешь оформить проект, нажми:
 
-📚 <b>«Оформить заявку»</b>
+📚 «Оформить заявку»
 
-А если у тебя есть вопрос — выбери:
-
-📞 <b>«Связаться»</b>
+А если у тебя просто вопрос — выбери раздел «Связаться».
 """,
         reply_markup=main_menu(),
         parse_mode="HTML"
@@ -1578,8 +1535,6 @@ async def random_message(message: Message):
 # =========================================================
 
 async def main():
-
-    init_db()
 
     print("🤖 SERGEY PROJECT запущен!")
 
