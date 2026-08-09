@@ -1,16 +1,20 @@
 import asyncio
 import os
+import html
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from dotenv import load_dotenv
 
 
-# ==============================
+# =========================================================
 # НАСТРОЙКИ
-# ==============================
+# =========================================================
 
 load_dotenv()
 
@@ -18,18 +22,27 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 
 
-# ==============================
+# =========================================================
+# СОСТОЯНИЯ ЗАЯВКИ
+# =========================================================
+
+class OrderState(StatesGroup):
+    waiting_for_order = State()
+    confirmation = State()
+
+
+# =========================================================
 # ГЛАВНОЕ МЕНЮ
-# ==============================
+# =========================================================
 
 def main_menu():
     keyboard = InlineKeyboardBuilder()
 
     keyboard.button(
-        text="📚 Оформить заказ",
+        text="📚 Оформить заявку",
         callback_data="order"
     )
 
@@ -58,27 +71,92 @@ def main_menu():
     return keyboard.as_markup()
 
 
-# ==============================
+# =========================================================
+# ТОЛЬКО КНОПКА "НАЗАД"
+# =========================================================
+
+def back_to_menu():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="🏠 Вернуться в главное меню",
+        callback_data="back"
+    )
+
+    return keyboard.as_markup()
+
+
+# =========================================================
+# КНОПКИ ПОДТВЕРЖДЕНИЯ ЗАЯВКИ
+# =========================================================
+
+def order_confirmation():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="✅ Отправить заявку",
+        callback_data="send_order"
+    )
+
+    keyboard.button(
+        text="✏️ Заполнить заново",
+        callback_data="edit_order"
+    )
+
+    keyboard.button(
+        text="❌ Отменить",
+        callback_data="cancel_order"
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
+
+# =========================================================
+# КНОПКА НАЗАД ВО ВРЕМЯ ЗАПОЛНЕНИЯ
+# =========================================================
+
+def order_back_button():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="🏠 Назад в главное меню",
+        callback_data="back"
+    )
+
+    return keyboard.as_markup()
+
+
+# =========================================================
 # /START
-# ==============================
+# =========================================================
 
 @dp.message(CommandStart())
-async def start(message: Message):
+async def start(message: Message, state: FSMContext):
+
+    await state.clear()
 
     text = """
 🎓 <b>SERGEY PROJECT</b>
 
-<b>Индивидуальные учебные проекты без лишней суеты.</b>
+Привет! 👋
 
-Если впереди защита, а времени на самостоятельную подготовку совсем немного — здесь можно оформить заказ на подготовку материалов для проекта.
+Если тебе нужен индивидуальный учебный проект, презентация или материалы для защиты — ты по адресу.
 
-📚 Работа подбирается под конкретную тему и требования.
+🏫 Этот бот создан специально для учеников <b>МБОУ-СОШ №19 г. Армавира</b>.
 
-🎤 Помимо самого проекта можно подготовить материалы для выступления.
+Здесь ты можешь:
 
-📊 Также доступна презентация для защиты.
+📚 Оформить заявку на проект
+📦 Узнать, что входит в работу
+⭐ Посмотреть, почему выбирают нас
+💬 Ознакомиться с отзывами
+📞 Задать свой вопрос
 
-👇 Выберите интересующий раздел:
+🤝 Общаемся здесь просто и по-дружески — без лишней официальности.
+
+👇 Выбирай нужный раздел:
 """
 
     await message.answer(
@@ -88,9 +166,9 @@ async def start(message: Message):
     )
 
 
-# ==============================
+# =========================================================
 # ЧТО ВХОДИТ В РАБОТУ
-# ==============================
+# =========================================================
 
 @dp.callback_query(F.data == "included")
 async def included(callback: CallbackQuery):
@@ -98,36 +176,34 @@ async def included(callback: CallbackQuery):
     text = """
 📦 <b>ЧТО МОЖНО ПОЛУЧИТЬ В ЗАКАЗЕ?</b>
 
-📚 <b>Проект</b>
+📚 <b>Готовый проект</b>
 
-Основной материал по выбранной теме, подготовленный с учетом поставленной задачи.
+Материал под твою тему с учетом задания и необходимых требований.
 
 📊 <b>Презентация</b>
 
-Отдельные слайды для наглядного представления проекта во время выступления.
+Наглядные слайды, которые можно использовать во время защиты.
 
-🎤 <b>Материалы для защиты</b>
+🎤 <b>Материалы для выступления</b>
 
-Краткий и понятный текст, который поможет ориентироваться во время презентации.
+Понятный текст, который поможет тебе подготовиться к защите и рассказать о своей работе.
 
 ━━━━━━━━━━━━━━
 
-💡 Комплектация заказа зависит от того,
-что именно требуется для вашей работы.
+💡 Наполнение заказа зависит от того, что именно тебе понадобится.
 
-Чтобы узнать стоимость и обсудить детали,
-нажмите кнопку ниже.
+Если хочешь обсудить свой проект — нажми кнопку ниже.
 """
 
     keyboard = InlineKeyboardBuilder()
 
     keyboard.button(
-        text="📚 Оформить заказ",
+        text="📚 Оформить заявку",
         callback_data="order"
     )
 
     keyboard.button(
-        text="◀️ Главное меню",
+        text="🏠 Главное меню",
         callback_data="back"
     )
 
@@ -142,9 +218,9 @@ async def included(callback: CallbackQuery):
     await callback.answer()
 
 
-# ==============================
+# =========================================================
 # ПОЧЕМУ ВЫБИРАЮТ НАС
-# ==============================
+# =========================================================
 
 @dp.callback_query(F.data == "why")
 async def why(callback: CallbackQuery):
@@ -152,43 +228,46 @@ async def why(callback: CallbackQuery):
     text = """
 ⭐ <b>ПОЧЕМУ SERGEY PROJECT?</b>
 
-⏰ <b>Сроки заранее согласовываются</b>
+⏰ <b>Заранее договариваемся о сроках</b>
 
-Перед началом работы обсуждаем дедлайн, чтобы результат был готов к нужной дате.
+Сразу обсуждаем, к какой дате тебе понадобится готовая работа.
 
-🎯 <b>Каждый заказ рассматривается отдельно</b>
+🎯 <b>Каждая заявка рассматривается отдельно</b>
 
-Мы учитываем тему, требования преподавателя и особенности конкретной работы.
+Учитываем твою тему, предмет, класс и требования к заданию.
 
-🧩 <b>Без универсальных заготовок</b>
+🧩 <b>Работа под конкретную задачу</b>
 
-Материал формируется непосредственно под выбранную тему и задачу.
+Не просто выдаём случайную заготовку — учитываем то, что требуется именно тебе.
 
-💬 <b>Связь на протяжении всего заказа</b>
+💬 <b>Можно связаться и задать вопрос</b>
 
-Можно задать вопрос, уточнить детали или сообщить о необходимых изменениях.
+Если нужно что-то уточнить или изменить, всегда можно написать.
 
 🔎 <b>Внимание к требованиям</b>
 
-При подготовке учитываются объем, структура, оформление и другие условия задания.
+Учитываем структуру, объем, оформление и другие условия задания.
+
+🏫 <b>Для учеников МБОУ-СОШ №19</b>
+
+Бот ориентирован именно на учеников нашей школы.
 
 ━━━━━━━━━━━━━━
 
-📌 <b>Нужен проект?</b>
+📌 Хочешь обсудить свой проект?
 
-Оставьте заявку — сначала обсудим задачу,
-а затем согласуем дальнейшие действия.
+Оставь заявку — сначала разберёмся, что тебе нужно.
 """
 
     keyboard = InlineKeyboardBuilder()
 
     keyboard.button(
-        text="📚 Оформить заказ",
+        text="📚 Оформить заявку",
         callback_data="order"
     )
 
     keyboard.button(
-        text="◀️ Главное меню",
+        text="🏠 Главное меню",
         callback_data="back"
     )
 
@@ -203,122 +282,65 @@ async def why(callback: CallbackQuery):
     await callback.answer()
 
 
-# ==============================
-# ОФОРМЛЕНИЕ ЗАКАЗА
-# ==============================
+# =========================================================
+# НАЧАЛО ОФОРМЛЕНИЯ ЗАЯВКИ
+# =========================================================
 
 @dp.callback_query(F.data == "order")
-async def order(callback: CallbackQuery):
+async def order(callback: CallbackQuery, state: FSMContext):
+
+    await state.set_state(OrderState.waiting_for_order)
 
     text = """
-📚 <b>НОВАЯ ЗАЯВКА</b>
+📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
 
-Чтобы я мог быстро разобраться с задачей,
-отправьте одним сообщением:
+Давай быстро разберёмся, что тебе нужно.
 
-🎓 <b>Класс / курс:</b>
-📖 <b>Предмет:</b>
-📝 <b>Тема:</b>
-📅 <b>Когда нужно:</b>
-📦 <b>Что требуется:</b>
+Отправь одним сообщением:
 
-<b>Пример:</b>
+🎓 <b>Класс / курс</b>
+📖 <b>Предмет</b>
+📝 <b>Тема проекта</b>
+📅 <b>Когда нужна работа</b>
+📦 <b>Что тебе требуется</b>
 
-<code>
-Класс: 10
-Предмет: история
-Тема: Реформы Петра I
-Срок: 28 августа
-Нужно: проект + презентация
-</code>
+Например:
 
-После получения информации заявка будет
-передана для дальнейшего обсуждения.
-"""
+<b>10 класс
+Физика
+Электромагнитная индукция
+Нужно к 25 августа
+Проект + презентация + речь</b>
 
-    await callback.message.answer(
-        text,
-        parse_mode="HTML"
-    )
+После этого я покажу тебе заявку перед отправкой.
 
-    await callback.answer()
-
-
-# ==============================
-# СВЯЗЬ
-# ==============================
-
-@dp.callback_query(F.data == "contact")
-async def contact(callback: CallbackQuery):
-
-    text = """
-📞 <b>СВЯЗАТЬСЯ С SERGEY PROJECT</b>
-
-Есть вопрос перед оформлением заказа?
-
-Напишите сообщение в этот чат и опишите,
-что именно вас интересует.
-
-Если речь идет о конкретном проекте,
-лучше сразу указать предмет и тему —
-так будет проще быстро сориентироваться.
-
-💬 <b>Мы обязательно ответим.</b>
-"""
-
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="◀️ Главное меню",
-        callback_data="back"
-    )
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-# ==============================
-# НАЗАД
-# ==============================
-
-@dp.callback_query(F.data == "back")
-async def back(callback: CallbackQuery):
-
-    text = """
-🎓 <b>SERGEY PROJECT</b>
-
-Здесь можно оформить заявку на подготовку
-индивидуального учебного проекта.
-
-📚 Проект
-📊 Презентация
-🎤 Материалы для защиты
-
-Все детали согласовываются перед началом работы.
-
-👇 Выберите нужный раздел:
+⚠️ Пока ты не нажмёшь <b>«Отправить заявку»</b>, она никуда не уйдёт.
 """
 
     await callback.message.edit_text(
         text,
-        reply_markup=main_menu(),
+        reply_markup=order_back_button(),
         parse_mode="HTML"
     )
 
     await callback.answer()
 
 
-# ==============================
-# ПОЛУЧЕНИЕ СООБЩЕНИЙ
-# ==============================
+# =========================================================
+# ПОЛУЧЕНИЕ ЗАЯВКИ
+# =========================================================
 
-@dp.message()
-async def receive_order(message: Message):
+@dp.message(OrderState.waiting_for_order)
+async def receive_order(message: Message, state: FSMContext):
+
+    if not message.text:
+        await message.answer(
+            "🙂 Отправь, пожалуйста, информацию обычным текстовым сообщением.",
+            reply_markup=order_back_button()
+        )
+        return
+
+    await state.update_data(order_text=message.text)
 
     user = message.from_user
 
@@ -327,18 +349,81 @@ async def receive_order(message: Message):
     else:
         username = "не указан"
 
-    admin_text = f"""
-📥 <b>НОВАЯ ЗАЯВКА</b>
+    # Экранируем пользовательский текст,
+    # чтобы HTML-разметка бота не ломалась.
+    safe_name = html.escape(user.full_name)
+    safe_username = html.escape(username)
+    safe_order = html.escape(message.text)
 
-👤 <b>Клиент:</b> {user.full_name}
-🔗 <b>Username:</b> {username}
-🆔 <b>Telegram ID:</b> <code>{user.id}</code>
+    preview = f"""
+📋 <b>ПРОВЕРЬ ЗАЯВКУ</b>
+
+👤 <b>Имя:</b> {safe_name}
+🔗 <b>Username:</b> {safe_username}
 
 ━━━━━━━━━━━━━━
 
-📄 <b>Сообщение клиента:</b>
+📄 <b>Данные проекта:</b>
 
-{message.text}
+{safe_order}
+
+━━━━━━━━━━━━━━
+
+Всё верно?
+
+Если всё правильно — нажми <b>«Отправить заявку»</b>.
+
+⚠️ До этого момента заявка <b>не отправлена</b>.
+"""
+
+    await state.set_state(OrderState.confirmation)
+
+    await message.answer(
+        preview,
+        reply_markup=order_confirmation(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# ОТПРАВКА ЗАЯВКИ АДМИНИСТРАТОРУ
+# =========================================================
+
+@dp.callback_query(
+    OrderState.confirmation,
+    F.data == "send_order"
+)
+async def send_order(callback: CallbackQuery, state: FSMContext):
+
+    data = await state.get_data()
+    order_text = data.get(
+        "order_text",
+        "Информация не указана"
+    )
+
+    user = callback.from_user
+
+    if user.username:
+        username = f"@{user.username}"
+    else:
+        username = "не указан"
+
+    safe_name = html.escape(user.full_name)
+    safe_username = html.escape(username)
+    safe_order = html.escape(order_text)
+
+    admin_text = f"""
+📥 <b>НОВАЯ ЗАЯВКА</b>
+
+👤 <b>Клиент:</b> {safe_name}
+🔗 <b>Username:</b> {safe_username}
+🆔 <b>Telegram ID:</b> {user.id}
+
+━━━━━━━━━━━━━━
+
+📄 <b>Заявка:</b>
+
+{safe_order}
 """
 
     await bot.send_message(
@@ -347,25 +432,192 @@ async def receive_order(message: Message):
         parse_mode="HTML"
     )
 
-    await message.answer(
-        """
-✅ <b>Сообщение получено!</b>
+    # Очищаем состояние после отправки.
+    await state.clear()
 
-Информация отправлена администратору.
+    text = """
+✅ <b>ЗАЯВКА ОТПРАВЛЕНА!</b>
 
-📩 С вами свяжутся для уточнения темы,
-сроков и остальных деталей заказа.
+Готово! Я получил твою заявку.
 
+Скоро свяжусь с тобой, чтобы обсудить детали проекта, сроки и всё необходимое.
+
+🤝 Спасибо, что обратился в SERGEY PROJECT!
+"""
+
+    # После отправки показываем ТОЛЬКО кнопку
+    # возврата в главное меню.
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_to_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer("Заявка отправлена! ✅")
+
+
+# =========================================================
+# ЗАПОЛНИТЬ ЗАНОВО
+# =========================================================
+
+@dp.callback_query(
+    OrderState.confirmation,
+    F.data == "edit_order"
+)
+async def edit_order(callback: CallbackQuery, state: FSMContext):
+
+    await state.set_state(OrderState.waiting_for_order)
+
+    text = """
+✏️ <b>ЗАПОЛНИМ ЗАНОВО</b>
+
+Отправь одним сообщением:
+
+🎓 <b>Класс / курс</b>
+📖 <b>Предмет</b>
+📝 <b>Тема проекта</b>
+📅 <b>Когда нужна работа</b>
+📦 <b>Что тебе нужно</b>
+
+Я снова покажу тебе заявку перед отправкой.
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=order_back_button(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ОТМЕНА ЗАЯВКИ
+# =========================================================
+
+@dp.callback_query(
+    OrderState.confirmation,
+    F.data == "cancel_order"
+)
+async def cancel_order(callback: CallbackQuery, state: FSMContext):
+
+    await state.clear()
+
+    text = """
+❌ <b>ЗАЯВКА ОТМЕНЕНА</b>
+
+Ничего страшного 🙂
+
+Если передумаешь, всегда сможешь оформить новую заявку через главное меню.
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_to_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer("Заявка отменена")
+
+
+# =========================================================
+# СВЯЗАТЬСЯ
+# =========================================================
+
+@dp.callback_query(F.data == "contact")
+async def contact(callback: CallbackQuery):
+
+    text = """
+📞 <b>СВЯЗАТЬСЯ С SERGEY PROJECT</b>
+
+Есть вопрос?
+
+Напиши его сюда — постараюсь помочь.
+
+Если вопрос связан с конкретным проектом, можешь сразу указать предмет и тему. Так будет проще быстро разобраться.
+
+💬 Не стесняйся писать — общаемся нормально, без лишней официальности 🙂
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="🏠 Главное меню",
+        callback_data="back"
+    )
+
+    keyboard.adjust(1)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
+# =========================================================
+
+@dp.callback_query(F.data == "back")
+async def back(callback: CallbackQuery, state: FSMContext):
+
+    # Если пользователь находился в оформлении заявки,
+    # все введённые данные очищаются.
+    await state.clear()
+
+    text = """
 🎓 <b>SERGEY PROJECT</b>
-""",
-        parse_mode="HTML",
-        reply_markup=main_menu()
+
+Снова привет! 👋
+
+Здесь ты можешь оформить заявку на индивидуальный учебный проект или посмотреть дополнительную информацию.
+
+🏫 Бот создан для учеников <b>МБОУ-СОШ №19 г. Армавира</b>.
+
+🤝 Всё просто: выбирай нужный раздел и пиши, если появились вопросы.
+
+👇 Что тебя интересует?
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=main_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# СЛУЧАЙНЫЕ СООБЩЕНИЯ
+# =========================================================
+
+@dp.message()
+async def random_message(message: Message):
+
+    text = """
+🙂 <b>Не совсем понял тебя.</b>
+
+Если хочешь оформить проект, нажми:
+
+📚 <b>«Оформить заявку»</b>
+
+А если у тебя просто вопрос — можешь выбрать раздел «Связаться».
+"""
+
+    await message.answer(
+        text,
+        reply_markup=main_menu(),
+        parse_mode="HTML"
     )
 
 
-# ==============================
+# =========================================================
 # ЗАПУСК БОТА
-# ==============================
+# =========================================================
 
 async def main():
 
