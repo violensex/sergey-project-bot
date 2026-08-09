@@ -1,9 +1,10 @@
 import asyncio
 import os
 import html
+import json
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -24,6 +25,30 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+USERS_FILE = "users.json"
+
+
+# =========================================================
+# СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЕЙ
+# =========================================================
+
+def load_users():
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def save_user(user_id):
+    users = load_users()
+
+    if user_id not in users:
+        users.append(user_id)
+
+        with open(USERS_FILE, "w", encoding="utf-8") as file:
+            json.dump(users, file)
+
 
 # =========================================================
 # СОСТОЯНИЯ
@@ -36,6 +61,15 @@ class OrderState(StatesGroup):
 
 class ContactState(StatesGroup):
     waiting_for_message = State()
+
+
+class AdminReplyState(StatesGroup):
+    waiting_for_reply = State()
+
+
+class BroadcastState(StatesGroup):
+    waiting_for_message = State()
+    confirmation = State()
 
 
 # =========================================================
@@ -76,7 +110,7 @@ def main_menu():
 
 
 # =========================================================
-# КНОПКА НАЗАД В ГЛАВНОЕ МЕНЮ
+# КНОПКА НАЗАД
 # =========================================================
 
 def back_to_menu():
@@ -89,10 +123,6 @@ def back_to_menu():
 
     return keyboard.as_markup()
 
-
-# =========================================================
-# КНОПКА НАЗАД ПРИ ЗАПОЛНЕНИИ
-# =========================================================
 
 def order_back_button():
     keyboard = InlineKeyboardBuilder()
@@ -133,6 +163,21 @@ def order_confirmation():
 
 
 # =========================================================
+# КНОПКА ОТВЕТИТЬ ПОЛЬЗОВАТЕЛЮ
+# =========================================================
+
+def admin_reply_button(user_id):
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="💬 Ответить пользователю",
+        callback_data=f"reply_{user_id}"
+    )
+
+    return keyboard.as_markup()
+
+
+# =========================================================
 # /START
 # =========================================================
 
@@ -140,6 +185,8 @@ def order_confirmation():
 async def start(message: Message, state: FSMContext):
 
     await state.clear()
+
+    save_user(message.from_user.id)
 
     text = """
 🎓 <b>SERGEY PROJECT</b>
@@ -176,6 +223,8 @@ async def start(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "included")
 async def included(callback: CallbackQuery):
+
+    save_user(callback.from_user.id)
 
     text = """
 📦 <b>ЧТО МОЖНО ПОЛУЧИТЬ В ЗАКАЗЕ?</b>
@@ -228,6 +277,8 @@ async def included(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "why")
 async def why(callback: CallbackQuery):
+
+    save_user(callback.from_user.id)
 
     text = """
 ⭐ <b>ПОЧЕМУ SERGEY PROJECT?</b>
@@ -293,6 +344,8 @@ async def why(callback: CallbackQuery):
 @dp.callback_query(F.data == "order")
 async def order(callback: CallbackQuery, state: FSMContext):
 
+    save_user(callback.from_user.id)
+
     await state.set_state(OrderState.waiting_for_order)
 
     text = """
@@ -336,6 +389,8 @@ async def order(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(OrderState.waiting_for_order)
 async def receive_order(message: Message, state: FSMContext):
+
+    save_user(message.from_user.id)
 
     if not message.text:
         await message.answer(
@@ -395,6 +450,7 @@ async def receive_order(message: Message, state: FSMContext):
 async def send_order(callback: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
+
     order_text = data.get(
         "order_text",
         "Информация не указана"
@@ -425,7 +481,8 @@ async def send_order(callback: CallbackQuery, state: FSMContext):
     await bot.send_message(
         ADMIN_ID,
         admin_text,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=admin_reply_button(user.id)
     )
 
     await state.clear()
@@ -520,6 +577,8 @@ async def cancel_order(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "contact")
 async def contact(callback: CallbackQuery, state: FSMContext):
 
+    save_user(callback.from_user.id)
+
     await state.clear()
     await state.set_state(ContactState.waiting_for_message)
 
@@ -561,6 +620,8 @@ async def receive_contact_message(
     state: FSMContext
 ):
 
+    save_user(message.from_user.id)
+
     if not message.text:
         await message.answer(
             "🙂 Напиши, пожалуйста, сообщение обычным текстом.",
@@ -593,7 +654,8 @@ async def receive_contact_message(
     await bot.send_message(
         ADMIN_ID,
         admin_text,
-        parse_mode="HTML"
+        parse_mode="HTML",
+        reply_markup=admin_reply_button(user.id)
     )
 
     await state.clear()
@@ -614,11 +676,312 @@ async def receive_contact_message(
 
 
 # =========================================================
+# ОТВЕТ ПОЛЬЗОВАТЕЛЮ
+# =========================================================
+
+@dp.callback_query(F.data.startswith("reply_"))
+async def reply_to_user(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer(
+            "У тебя нет доступа к этой функции.",
+            show_alert=True
+        )
+        return
+
+    try:
+        user_id = int(callback.data.split("_")[1])
+    except (ValueError, IndexError):
+        await callback.answer(
+            "Ошибка пользователя.",
+            show_alert=True
+        )
+        return
+
+    await state.clear()
+
+    await state.update_data(reply_user_id=user_id)
+    await state.set_state(AdminReplyState.waiting_for_reply)
+
+    await callback.message.answer(
+        "💬 <b>Напиши сообщение пользователю.</b>\n\n"
+        "Оно будет отправлено ему от имени бота.",
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ОТПРАВКА ОТВЕТА ПОЛЬЗОВАТЕЛЮ
+# =========================================================
+
+@dp.message(AdminReplyState.waiting_for_reply)
+async def send_admin_reply(
+    message: Message,
+    state: FSMContext
+):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    if not message.text:
+        await message.answer(
+            "🙂 Отправь ответ обычным текстовым сообщением."
+        )
+        return
+
+    data = await state.get_data()
+    user_id = data.get("reply_user_id")
+
+    if not user_id:
+        await state.clear()
+        await message.answer("❌ Не удалось определить пользователя.")
+        return
+
+    try:
+        safe_message = html.escape(message.text)
+
+        await bot.send_message(
+            user_id,
+            f"""
+💬 <b>Сообщение от SERGEY PROJECT</b>
+
+{safe_message}
+
+━━━━━━━━━━━━━━
+
+Если хочешь что-то уточнить, можешь написать нам через раздел «📞 Связаться».
+""",
+            parse_mode="HTML"
+        )
+
+        await message.answer(
+            "✅ Сообщение отправлено пользователю."
+        )
+
+    except Exception:
+        await message.answer(
+            "❌ Не удалось отправить сообщение.\n\n"
+            "Возможно, пользователь заблокировал бота."
+        )
+
+    await state.clear()
+
+
+# =========================================================
+# АДМИН: РАССЫЛКА
+# =========================================================
+
+@dp.message(Command("broadcast"))
+async def broadcast_start(
+    message: Message,
+    state: FSMContext
+):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    await state.clear()
+    await state.set_state(BroadcastState.waiting_for_message)
+
+    await message.answer(
+        """
+📢 <b>РАССЫЛКА</b>
+
+Отправь следующим сообщением текст, который хочешь отправить пользователям.
+
+После этого я покажу тебе предварительный просмотр и попрошу подтвердить отправку.
+
+❌ Чтобы выйти — напиши <b>отмена</b>.
+""",
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# ПОЛУЧЕНИЕ ТЕКСТА РАССЫЛКИ
+# =========================================================
+
+@dp.message(BroadcastState.waiting_for_message)
+async def receive_broadcast(
+    message: Message,
+    state: FSMContext
+):
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    if not message.text:
+        await message.answer(
+            "🙂 Для рассылки нужен обычный текст."
+        )
+        return
+
+    if message.text.lower() == "отмена":
+        await state.clear()
+
+        await message.answer(
+            "❌ Рассылка отменена."
+        )
+        return
+
+    await state.update_data(
+        broadcast_text=message.text
+    )
+
+    safe_text = html.escape(message.text)
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="📢 Отправить всем",
+        callback_data="confirm_broadcast"
+    )
+
+    keyboard.button(
+        text="❌ Отменить",
+        callback_data="cancel_broadcast"
+    )
+
+    keyboard.adjust(1)
+
+    await state.set_state(BroadcastState.confirmation)
+
+    await message.answer(
+        f"""
+📢 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>
+
+━━━━━━━━━━━━━━
+
+{safe_text}
+
+━━━━━━━━━━━━━━
+
+👥 Получателей сейчас: <b>{len(load_users())}</b>
+
+Отправить это сообщение всем?
+""",
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# ПОДТВЕРЖДЕНИЕ РАССЫЛКИ
+# =========================================================
+
+@dp.callback_query(
+    BroadcastState.confirmation,
+    F.data == "confirm_broadcast"
+)
+async def confirm_broadcast(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if callback.from_user.id != ADMIN_ID:
+        return
+
+    data = await state.get_data()
+
+    broadcast_text = data.get(
+        "broadcast_text",
+        ""
+    )
+
+    users = load_users()
+
+    await callback.message.edit_text(
+        "📢 <b>Рассылка началась...</b>\n\n"
+        "Пожалуйста, подожди.",
+        parse_mode="HTML"
+    )
+
+    success = 0
+    failed = 0
+
+    safe_text = html.escape(broadcast_text)
+
+    for user_id in users:
+
+        if user_id == ADMIN_ID:
+            continue
+
+        try:
+
+            await bot.send_message(
+                user_id,
+                f"""
+📢 <b>SERGEY PROJECT</b>
+
+{safe_text}
+""",
+                parse_mode="HTML"
+            )
+
+            success += 1
+
+            # Небольшая пауза между сообщениями.
+            await asyncio.sleep(0.05)
+
+        except Exception:
+            failed += 1
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        f"""
+✅ <b>РАССЫЛКА ЗАВЕРШЕНА</b>
+
+📨 Успешно отправлено: <b>{success}</b>
+
+❌ Не удалось отправить: <b>{failed}</b>
+""",
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ОТМЕНА РАССЫЛКИ
+# =========================================================
+
+@dp.callback_query(
+    BroadcastState.confirmation,
+    F.data == "cancel_broadcast"
+)
+async def cancel_broadcast(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if callback.from_user.id != ADMIN_ID:
+        return
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        "❌ <b>Рассылка отменена.</b>",
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
 # ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
 # =========================================================
 
 @dp.callback_query(F.data == "back")
-async def back(callback: CallbackQuery, state: FSMContext):
+async def back(
+    callback: CallbackQuery,
+    state: FSMContext
+):
 
     await state.clear()
 
@@ -651,6 +1014,8 @@ async def back(callback: CallbackQuery, state: FSMContext):
 
 @dp.message()
 async def random_message(message: Message):
+
+    save_user(message.from_user.id)
 
     text = """
 🙂 <b>Не совсем понял тебя.</b>
