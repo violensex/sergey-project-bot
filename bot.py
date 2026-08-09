@@ -27,6 +27,10 @@ dp = Dispatcher(storage=MemoryStorage())
 
 USERS_FILE = "users.json"
 ORDERS_FILE = "orders.json"
+PROMOCODES_FILE = "promocodes.json"
+
+PRICE_9 = 800
+PRICE_10 = 1000
 
 
 # =========================================================
@@ -43,7 +47,12 @@ def load_json(filename, default):
 
 def save_json(filename, data):
     with open(filename, "w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=2)
+        json.dump(
+            data,
+            file,
+            ensure_ascii=False,
+            indent=2
+        )
 
 
 # =========================================================
@@ -70,17 +79,60 @@ def load_orders():
     return load_json(ORDERS_FILE, [])
 
 
-def save_order(user, order_text):
+def save_order(user, order_text, grade, price, promo_code=None, discount=0):
     orders = load_orders()
 
     orders.append({
         "user_id": user.id,
         "name": user.full_name,
         "username": user.username or "",
-        "text": order_text
+        "text": order_text,
+        "grade": grade,
+        "price": price,
+        "promo_code": promo_code or "",
+        "discount": discount
     })
 
     save_json(ORDERS_FILE, orders)
+
+
+# =========================================================
+# ПРОМОКОДЫ
+# =========================================================
+
+def load_promocodes():
+    return load_json(PROMOCODES_FILE, {})
+
+
+def save_promocodes(promocodes):
+    save_json(PROMOCODES_FILE, promocodes)
+
+
+def create_promocode(code, discount):
+    promocodes = load_promocodes()
+
+    promocodes[code.upper()] = {
+        "discount": discount,
+        "active": True
+    }
+
+    save_promocodes(promocodes)
+
+
+def check_promocode(code):
+    promocodes = load_promocodes()
+
+    code = code.upper().strip()
+
+    if code not in promocodes:
+        return None
+
+    promo = promocodes[code]
+
+    if not promo.get("active", True):
+        return None
+
+    return promo
 
 
 # =========================================================
@@ -105,6 +157,15 @@ class BroadcastState(StatesGroup):
     confirmation = State()
 
 
+class PromoState(StatesGroup):
+    waiting_for_code = State()
+
+
+class AdminPromoState(StatesGroup):
+    waiting_for_code = State()
+    waiting_for_discount = State()
+
+
 # =========================================================
 # ГЛАВНОЕ МЕНЮ
 # =========================================================
@@ -118,18 +179,23 @@ def main_menu():
     )
 
     keyboard.button(
-        text="📦 Что входит в работу",
-        callback_data="included"
-    )
-
-    keyboard.button(
         text="💰 Цены",
         callback_data="prices"
     )
 
     keyboard.button(
+        text="📦 Что входит в работу",
+        callback_data="included"
+    )
+
+    keyboard.button(
         text="💬 Отзывы",
         url="https://t.me/projectsergey1ak"
+    )
+
+    keyboard.button(
+        text="🎟️ Промокод",
+        callback_data="promo"
     )
 
     keyboard.button(
@@ -169,6 +235,33 @@ def order_back_button():
 
 
 # =========================================================
+# ВЫБОР КЛАССА
+# =========================================================
+
+def grade_keyboard():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="9️⃣ 9 класс — 800 ₽",
+        callback_data="grade_9"
+    )
+
+    keyboard.button(
+        text="🔟 10 класс — 1000 ₽",
+        callback_data="grade_10"
+    )
+
+    keyboard.button(
+        text="🏠 Назад",
+        callback_data="back"
+    )
+
+    keyboard.adjust(1)
+
+    return keyboard.as_markup()
+
+
+# =========================================================
 # ПОДТВЕРЖДЕНИЕ ЗАЯВКИ
 # =========================================================
 
@@ -196,7 +289,7 @@ def order_confirmation():
 
 
 # =========================================================
-# КНОПКА ОТВЕТИТЬ АДМИНУ
+# КНОПКА ОТВЕТИТЬ
 # =========================================================
 
 def admin_reply_button(user_id):
@@ -238,11 +331,16 @@ def admin_menu():
     )
 
     keyboard.button(
+        text="🎟️ Промокоды",
+        callback_data="admin_promos"
+    )
+
+    keyboard.button(
         text="❌ Закрыть",
         callback_data="admin_close"
     )
 
-    keyboard.adjust(2, 2, 1)
+    keyboard.adjust(2, 2, 1, 1)
 
     return keyboard.as_markup()
 
@@ -263,6 +361,7 @@ def is_admin(user_id):
 async def start(message: Message, state: FSMContext):
 
     await state.clear()
+
     save_user(message.from_user.id)
 
     text = """
@@ -272,14 +371,15 @@ async def start(message: Message, state: FSMContext):
 
 Если тебе нужен индивидуальный учебный проект, презентация или материалы для защиты — ты по адресу.
 
-🏫 Этот бот создан специально для учеников <b>МБОУ-СОШ №19 г. Армавира</b>.
+🏫 Этот бот создан специально для учеников МБОУ-СОШ №19 г. Армавира.
 
 Здесь ты можешь:
 
 📚 Оформить заявку на проект
-📦 Узнать, что входит в работу
 💰 Посмотреть цены
+📦 Узнать, что входит в работу
 💬 Ознакомиться с отзывами
+🎟️ Активировать промокод
 📞 Задать свой вопрос
 
 👇 Выбирай нужный раздел:
@@ -293,188 +393,6 @@ async def start(message: Message, state: FSMContext):
 
 
 # =========================================================
-# АДМИН-ПАНЕЛЬ
-# =========================================================
-
-@dp.message(Command("admin"))
-async def admin_command(message: Message, state: FSMContext):
-
-    if not is_admin(message.from_user.id):
-        await message.answer("🙂 У тебя нет доступа к этой команде.")
-        return
-
-    await state.clear()
-
-    await message.answer(
-        """
-🔐 <b>АДМИН-ПАНЕЛЬ</b>
-
-Добро пожаловать в панель управления SERGEY PROJECT.
-
-👇 Выбери нужный раздел:
-""",
-        reply_markup=admin_menu(),
-        parse_mode="HTML"
-    )
-
-
-# =========================================================
-# СТАТИСТИКА
-# =========================================================
-
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats(callback: CallbackQuery):
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-
-    users = load_users()
-    orders = load_orders()
-
-    average = round(len(orders) / len(users), 2) if users else 0
-
-    text = f"""
-📊 <b>СТАТИСТИКА</b>
-
-👥 Пользователей: <b>{len(users)}</b>
-
-📚 Всего заявок: <b>{len(orders)}</b>
-
-💬 Среднее количество заявок на пользователя:
-<b>{average}</b>
-"""
-
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="◀️ Админ-панель",
-        callback_data="admin_back"
-    )
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ПОЛЬЗОВАТЕЛИ
-# =========================================================
-
-@dp.callback_query(F.data == "admin_users")
-async def admin_users(callback: CallbackQuery):
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-
-    users = load_users()
-
-    text = f"""
-👥 <b>ПОЛЬЗОВАТЕЛИ</b>
-
-Сейчас бот знает о:
-
-<b>{len(users)}</b> пользователях.
-
-Пользователи автоматически добавляются в список после нажатия /start.
-
-Этот список используется для рассылки.
-"""
-
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="📢 Сделать рассылку",
-        callback_data="admin_broadcast"
-    )
-
-    keyboard.button(
-        text="◀️ Админ-панель",
-        callback_data="admin_back"
-    )
-
-    keyboard.adjust(1)
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ПОСЛЕДНИЕ ЗАЯВКИ
-# =========================================================
-
-@dp.callback_query(F.data == "admin_orders")
-async def admin_orders(callback: CallbackQuery):
-
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа.", show_alert=True)
-        return
-
-    orders = load_orders()
-
-    if not orders:
-        text = """
-📋 <b>ПОСЛЕДНИЕ ЗАЯВКИ</b>
-
-Пока заявок нет.
-"""
-
-    else:
-        recent_orders = orders[-5:]
-        recent_orders.reverse()
-
-        text = "📋 <b>ПОСЛЕДНИЕ ЗАЯВКИ</b>\n\n"
-
-        for number, order in enumerate(recent_orders, 1):
-
-            username = (
-                f"@{order['username']}"
-                if order["username"]
-                else "не указан"
-            )
-
-            safe_name = html.escape(order["name"])
-            safe_username = html.escape(username)
-            safe_text = html.escape(order["text"])
-
-            text += f"""
-<b>{number}. {safe_name}</b>
-
-🔗 {safe_username}
-🆔 {order['user_id']}
-
-📄 {safe_text}
-
-━━━━━━━━━━━━━━
-"""
-
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="◀️ Админ-панель",
-        callback_data="admin_back"
-    )
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
 # ЦЕНЫ
 # =========================================================
 
@@ -484,21 +402,118 @@ async def prices(callback: CallbackQuery):
     save_user(callback.from_user.id)
 
     text = """
-💰 <b>ЦЕНЫ НА ПРОЕКТЫ</b>
+💰 <b>ЦЕНЫ</b>
 
-🏫 Цены указаны для учеников <b>МБОУ-СОШ №19 г. Армавира</b>.
+9️⃣ <b>9 класс — 800 ₽</b>
 
-🎓 <b>9 класс</b>
-800–1000 ₽
+🔟 <b>10 класс — 1000 ₽</b>
 
-🎓 <b>10 класс</b>
-1000–1300 ₽
+━━━━━━━━━━━━━━
 
-💡 Точная цена за проект <b>под ключ</b> определяется в указанном диапазоне и зависит от объёма и сложности работы.
+Цена указана за проект под ключ.
 
-⏰ <b>Важно:</b> чем ближе срок сдачи проекта, тем выше может быть стоимость.
+В стоимость входит работа в соответствии с согласованными требованиями к проекту.
 
-📌 Чтобы узнать точную стоимость именно твоего проекта, просто оформи заявку и напиши всю информацию по проекту одним сообщением.
+🎟️ Если у тебя есть промокод, его можно активировать в главном меню.
+
+⚠️ Стоимость может быть выше при очень сжатых сроках — чем ближе дата сдачи проекта, тем выше цена.
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_to_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПРОМОКОД — ПОЛЬЗОВАТЕЛЬ
+# =========================================================
+
+@dp.callback_query(F.data == "promo")
+async def promo_start(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    save_user(callback.from_user.id)
+
+    await state.set_state(PromoState.waiting_for_code)
+
+    text = """
+🎟️ <b>ПРОМОКОД</b>
+
+Если у тебя есть промокод — отправь его сюда.
+
+Я проверю его действительность и сообщу размер скидки.
+
+❌ Чтобы отменить, напиши <b>отмена</b>.
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_to_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+@dp.message(PromoState.waiting_for_code)
+async def receive_promo(
+    message: Message,
+    state: FSMContext
+):
+
+    save_user(message.from_user.id)
+
+    if not message.text:
+        await message.answer(
+            "🙂 Отправь промокод обычным текстом.",
+            reply_markup=back_to_menu()
+        )
+        return
+
+    if message.text.lower().strip() == "отмена":
+        await state.clear()
+
+        await message.answer(
+            "❌ Активация промокода отменена.",
+            reply_markup=main_menu()
+        )
+        return
+
+    code = message.text.strip().upper()
+    promo = check_promocode(code)
+
+    if not promo:
+        await message.answer(
+            "❌ Такой промокод не найден или уже недействителен.\n\n"
+            "Проверь код и попробуй ещё раз.",
+            reply_markup=back_to_menu()
+        )
+        return
+
+    discount = promo["discount"]
+
+    await state.update_data(
+        promo_code=code,
+        discount=discount
+    )
+
+    await state.clear()
+
+    text = f"""
+✅ <b>ПРОМОКОД АКТИВИРОВАН!</b>
+
+🎟️ Код: <b>{html.escape(code)}</b>
+🔥 Скидка: <b>{discount}%</b>
+
+Скидка будет применена автоматически при оформлении заявки.
+
+👇 Можешь сразу перейти к оформлению:
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -515,13 +530,11 @@ async def prices(callback: CallbackQuery):
 
     keyboard.adjust(1)
 
-    await callback.message.edit_text(
+    await message.answer(
         text,
         reply_markup=keyboard.as_markup(),
         parse_mode="HTML"
     )
-
-    await callback.answer()
 
 
 # =========================================================
@@ -529,22 +542,151 @@ async def prices(callback: CallbackQuery):
 # =========================================================
 
 @dp.callback_query(F.data == "order")
-async def order(callback: CallbackQuery, state: FSMContext):
+async def order(
+    callback: CallbackQuery,
+    state: FSMContext
+):
 
     save_user(callback.from_user.id)
 
-    await state.set_state(OrderState.waiting_for_order)
+    data = await state.get_data()
+
+    promo_code = data.get("promo_code")
+    discount = data.get("discount", 0)
+
+    await state.clear()
+
+    if promo_code:
+        await state.update_data(
+            promo_code=promo_code,
+            discount=discount
+        )
 
     text = """
 📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
 
-Напиши одним сообщением <b>всю информацию по своему проекту</b>.
+Сначала выбери свой класс:
 
-Можешь указать класс, предмет, тему, срок сдачи, что именно требуется и любые другие важные детали.
+👇
+"""
 
-Пиши всё своими словами — никакого специального шаблона нет.
+    await state.set_state(OrderState.waiting_for_order)
 
-👇 Отправь информацию одним сообщением.
+    # Временно сохраняем состояние оформления
+    await state.update_data(
+        selecting_grade=True
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=grade_keyboard(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ВЫБОР 9 КЛАССА
+# =========================================================
+
+@dp.callback_query(
+    OrderState.waiting_for_order,
+    F.data == "grade_9"
+)
+async def grade_9(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    await select_grade(
+        callback,
+        state,
+        "9 класс",
+        PRICE_9
+    )
+
+
+# =========================================================
+# ВЫБОР 10 КЛАССА
+# =========================================================
+
+@dp.callback_query(
+    OrderState.waiting_for_order,
+    F.data == "grade_10"
+)
+async def grade_10(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    await select_grade(
+        callback,
+        state,
+        "10 класс",
+        PRICE_10
+    )
+
+
+# =========================================================
+# ОБРАБОТКА ВЫБОРА КЛАССА
+# =========================================================
+
+async def select_grade(
+    callback: CallbackQuery,
+    state: FSMContext,
+    grade,
+    base_price
+):
+
+    data = await state.get_data()
+
+    promo_code = data.get("promo_code")
+    discount = data.get("discount", 0)
+
+    final_price = base_price
+
+    if discount:
+        final_price = round(
+            base_price * (100 - discount) / 100
+        )
+
+    await state.update_data(
+        grade=grade,
+        base_price=base_price,
+        final_price=final_price,
+        promo_code=promo_code,
+        discount=discount,
+        selecting_grade=False
+    )
+
+    if discount:
+        price_text = f"""
+💰 Обычная цена: <s>{base_price} ₽</s>
+🔥 Скидка: <b>{discount}%</b>
+🎉 Цена со скидкой: <b>{final_price} ₽</b>
+
+🎟️ Промокод <b>{html.escape(promo_code)}</b> применён.
+"""
+    else:
+        price_text = f"""
+💰 Цена за проект под ключ: <b>{base_price} ₽</b>
+
+🎟️ Промокод не применён.
+"""
+
+    text = f"""
+✅ Ты выбрал: <b>{grade}</b>
+
+{price_text}
+
+━━━━━━━━━━━━━━
+
+Теперь отправь <b>одним сообщением всю информацию по проекту</b>.
+
+Можешь написать тему, предмет, требования, срок сдачи и всё остальное, что считаешь важным.
+
+После этого я покажу заявку перед отправкой.
 """
 
     await callback.message.edit_text(
@@ -568,6 +710,15 @@ async def receive_order(
 
     save_user(message.from_user.id)
 
+    data = await state.get_data()
+
+    if data.get("selecting_grade"):
+        await message.answer(
+            "👇 Сначала выбери класс кнопкой выше.",
+            reply_markup=grade_keyboard()
+        )
+        return
+
     if not message.text:
         await message.answer(
             "🙂 Отправь, пожалуйста, информацию обычным текстовым сообщением.",
@@ -579,12 +730,50 @@ async def receive_order(
         order_text=message.text
     )
 
-    safe_order = html.escape(message.text)
+    grade = data.get(
+        "grade",
+        "не указан"
+    )
+
+    final_price = data.get(
+        "final_price",
+        0
+    )
+
+    promo_code = data.get(
+        "promo_code"
+    )
+
+    discount = data.get(
+        "discount",
+        0
+    )
+
+    safe_order = html.escape(
+        message.text
+    )
+
+    if promo_code and discount:
+        price_info = (
+            f"🎟️ Промокод: <b>{html.escape(promo_code)}</b>\n"
+            f"🔥 Скидка: <b>{discount}%</b>\n"
+            f"💰 Цена: <b>{final_price} ₽</b>"
+        )
+    else:
+        price_info = (
+            f"💰 Цена: <b>{final_price} ₽</b>"
+        )
 
     preview = f"""
-📄 <b>ТВОЯ ЗАЯВКА</b>
+📋 <b>ЗАЯВКА</b>
+
+🎓 Класс: <b>{html.escape(grade)}</b>
+
+{price_info}
 
 ━━━━━━━━━━━━━━
+
+📄 <b>Информация по проекту:</b>
 
 {safe_order}
 
@@ -594,10 +783,12 @@ async def receive_order(
 
 Если всё правильно — нажми «Отправить заявку».
 
-⚠️ Заявка будет отправлена только после нажатия этой кнопки.
+До этого момента заявка никуда не отправлена.
 """
 
-    await state.set_state(OrderState.confirmation)
+    await state.set_state(
+        OrderState.confirmation
+    )
 
     await message.answer(
         preview,
@@ -626,6 +817,25 @@ async def send_order(
         "Информация не указана"
     )
 
+    grade = data.get(
+        "grade",
+        "не указан"
+    )
+
+    final_price = data.get(
+        "final_price",
+        0
+    )
+
+    promo_code = data.get(
+        "promo_code"
+    )
+
+    discount = data.get(
+        "discount",
+        0
+    )
+
     user = callback.from_user
 
     username = (
@@ -634,14 +844,37 @@ async def send_order(
         else "не указан"
     )
 
-    safe_name = html.escape(user.full_name)
-    safe_username = html.escape(username)
-    safe_order = html.escape(order_text)
+    safe_name = html.escape(
+        user.full_name
+    )
+
+    safe_username = html.escape(
+        username
+    )
+
+    safe_order = html.escape(
+        order_text
+    )
 
     save_order(
         user,
-        order_text
+        order_text,
+        grade,
+        final_price,
+        promo_code,
+        discount
     )
+
+    if promo_code and discount:
+        promo_info = (
+            f"🎟️ Промокод: <b>{html.escape(promo_code)}</b>\n"
+            f"🔥 Скидка: <b>{discount}%</b>\n"
+            f"💰 Цена: <b>{final_price} ₽</b>"
+        )
+    else:
+        promo_info = (
+            f"💰 Цена: <b>{final_price} ₽</b>"
+        )
 
     admin_text = f"""
 📥 <b>НОВАЯ ЗАЯВКА</b>
@@ -649,6 +882,12 @@ async def send_order(
 👤 Клиент: {safe_name}
 🔗 Username: {safe_username}
 🆔 Telegram ID: {user.id}
+
+━━━━━━━━━━━━━━
+
+🎓 Класс: <b>{html.escape(grade)}</b>
+
+{promo_info}
 
 ━━━━━━━━━━━━━━
 
@@ -682,7 +921,9 @@ async def send_order(
         parse_mode="HTML"
     )
 
-    await callback.answer("Заявка отправлена! ✅")
+    await callback.answer(
+        "Заявка отправлена! ✅"
+    )
 
 
 # =========================================================
@@ -698,16 +939,25 @@ async def edit_order(
     state: FSMContext
 ):
 
+    data = await state.get_data()
+
+    grade = data.get(
+        "grade",
+        "не указан"
+    )
+
     await state.set_state(
         OrderState.waiting_for_order
     )
 
-    text = """
+    text = f"""
 ✏️ <b>ЗАПОЛНИМ ЗАНОВО</b>
 
-Напиши одним сообщением всю информацию по проекту.
+🎓 Класс: <b>{html.escape(grade)}</b>
 
-Можешь указать класс, предмет, тему, срок сдачи, требования и любые другие детали.
+Отправь <b>одним сообщением всю информацию по проекту</b>.
+
+Можешь указать тему, предмет, требования, срок сдачи и всё остальное, что необходимо знать.
 """
 
     await callback.message.edit_text(
@@ -746,7 +996,9 @@ async def cancel_order(
         parse_mode="HTML"
     )
 
-    await callback.answer("Заявка отменена")
+    await callback.answer(
+        "Заявка отменена"
+    )
 
 
 # =========================================================
@@ -763,7 +1015,7 @@ async def included(callback: CallbackQuery):
 
 📚 <b>Готовый проект</b>
 
-Материал под твою тему с учётом задания и необходимых требований.
+Материал под твою тему с учетом задания и необходимых требований.
 
 📊 <b>Презентация</b>
 
@@ -828,9 +1080,9 @@ async def contact(
 
 Просто напиши сообщение сюда 👇
 
-💬 Можешь рассказать о своей ситуации своими словами — без каких-либо шаблонов.
+💬 Можешь рассказать о своей ситуации своими словами — без шаблонов.
 
-После отправки сообщение будет передано администратору.
+После отправки твоё сообщение будет передано мне.
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -876,9 +1128,17 @@ async def receive_contact_message(
         else "не указан"
     )
 
-    safe_name = html.escape(user.full_name)
-    safe_username = html.escape(username)
-    safe_message = html.escape(message.text)
+    safe_name = html.escape(
+        user.full_name
+    )
+
+    safe_username = html.escape(
+        username
+    )
+
+    safe_message = html.escape(
+        message.text
+    )
 
     admin_text = f"""
 💬 <b>НОВОЕ СООБЩЕНИЕ</b>
@@ -937,7 +1197,6 @@ async def reply_to_user(
         user_id = int(
             callback.data.split("_")[1]
         )
-
     except (ValueError, IndexError):
         await callback.answer(
             "Ошибка пользователя.",
@@ -991,7 +1250,6 @@ async def send_admin_reply(
         return
 
     if message.text.lower() == "отмена":
-
         await state.clear()
 
         await message.answer(
@@ -1008,7 +1266,6 @@ async def send_admin_reply(
     )
 
     if not user_id:
-
         await state.clear()
 
         await message.answer(
@@ -1054,7 +1311,472 @@ async def send_admin_reply(
 
 
 # =========================================================
-# НАЧАЛО РАССЫЛКИ
+# АДМИН-ПАНЕЛЬ
+# =========================================================
+
+@dp.message(Command("admin"))
+async def admin_command(
+    message: Message,
+    state: FSMContext
+):
+
+    if not is_admin(message.from_user.id):
+        await message.answer(
+            "🙂 У тебя нет доступа к этой команде."
+        )
+        return
+
+    await state.clear()
+
+    await message.answer(
+        """
+🔐 <b>АДМИН-ПАНЕЛЬ</b>
+
+Добро пожаловать в панель управления SERGEY PROJECT.
+
+👇 Выбери нужный раздел:
+""",
+        reply_markup=admin_menu(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# СТАТИСТИКА
+# =========================================================
+
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+        return
+
+    users = load_users()
+    orders = load_orders()
+    promos = load_promocodes()
+
+    text = f"""
+📊 <b>СТАТИСТИКА</b>
+
+👥 Пользователей: <b>{len(users)}</b>
+
+📚 Всего заявок: <b>{len(orders)}</b>
+
+🎟️ Промокодов: <b>{len(promos)}</b>
+
+💬 Среднее количество заявок на пользователя:
+<b>{round(len(orders) / len(users), 2) if users else 0}</b>
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="◀️ Админ-панель",
+        callback_data="admin_back"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПОЛЬЗОВАТЕЛИ
+# =========================================================
+
+@dp.callback_query(F.data == "admin_users")
+async def admin_users(callback: CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+        return
+
+    users = load_users()
+
+    text = f"""
+👥 <b>ПОЛЬЗОВАТЕЛИ</b>
+
+Сейчас бот знает о:
+
+<b>{len(users)}</b> пользователях.
+
+Все пользователи автоматически добавляются в список после нажатия /start.
+
+Этот список используется для рассылки.
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="📢 Сделать рассылку",
+        callback_data="admin_broadcast"
+    )
+
+    keyboard.button(
+        text="◀️ Админ-панель",
+        callback_data="admin_back"
+    )
+
+    keyboard.adjust(1)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПОСЛЕДНИЕ ЗАЯВКИ
+# =========================================================
+
+@dp.callback_query(F.data == "admin_orders")
+async def admin_orders(callback: CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+        return
+
+    orders = load_orders()
+
+    if not orders:
+
+        text = """
+📋 <b>ПОСЛЕДНИЕ ЗАЯВКИ</b>
+
+Пока заявок нет.
+"""
+
+    else:
+
+        recent_orders = orders[-5:]
+        recent_orders.reverse()
+
+        text = "📋 <b>ПОСЛЕДНИЕ ЗАЯВКИ</b>\n\n"
+
+        for number, order_item in enumerate(
+            recent_orders,
+            1
+        ):
+
+            username = (
+                f"@{order_item['username']}"
+                if order_item["username"]
+                else "не указан"
+            )
+
+            safe_name = html.escape(
+                order_item["name"]
+            )
+
+            safe_username = html.escape(
+                username
+            )
+
+            safe_text = html.escape(
+                order_item["text"]
+            )
+
+            grade = html.escape(
+                str(order_item.get("grade", "не указан"))
+            )
+
+            price = order_item.get(
+                "price",
+                0
+            )
+
+            text += f"""
+<b>{number}. {safe_name}</b>
+
+🔗 {safe_username}
+🆔 {order_item['user_id']}
+🎓 {grade}
+💰 {price} ₽
+
+{safe_text}
+
+━━━━━━━━━━━━━━
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="◀️ Админ-панель",
+        callback_data="admin_back"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПРОМОКОДЫ — АДМИН
+# =========================================================
+
+@dp.callback_query(F.data == "admin_promos")
+async def admin_promos(callback: CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+        return
+
+    promos = load_promocodes()
+
+    if not promos:
+
+        promo_text = "Промокодов пока нет."
+
+    else:
+
+        promo_text = ""
+
+        for code, promo in promos.items():
+
+            status = (
+                "🟢 активен"
+                if promo.get("active", True)
+                else "🔴 выключен"
+            )
+
+            promo_text += (
+                f"🎟️ <b>{html.escape(code)}</b> — "
+                f"{promo['discount']}% — {status}\n"
+            )
+
+    text = f"""
+🎟️ <b>ПРОМОКОДЫ</b>
+
+{promo_text}
+
+━━━━━━━━━━━━━━
+
+Здесь можно создавать новые промокоды.
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="➕ Создать промокод",
+        callback_data="admin_create_promo"
+    )
+
+    keyboard.button(
+        text="◀️ Админ-панель",
+        callback_data="admin_back"
+    )
+
+    keyboard.adjust(1)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# СОЗДАНИЕ ПРОМОКОДА
+# =========================================================
+
+@dp.callback_query(F.data == "admin_create_promo")
+async def admin_create_promo(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
+        return
+
+    await state.set_state(
+        AdminPromoState.waiting_for_code
+    )
+
+    await callback.message.edit_text(
+        """
+➕ <b>СОЗДАНИЕ ПРОМОКОДА</b>
+
+Отправь код промокода.
+
+Например:
+
+<b>SCHOOL10</b>
+
+❌ Для отмены напиши: <b>отмена</b>
+""",
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+@dp.message(AdminPromoState.waiting_for_code)
+async def receive_admin_promo_code(
+    message: Message,
+    state: FSMContext
+):
+
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.text:
+        await message.answer(
+            "🙂 Отправь промокод обычным текстом."
+        )
+        return
+
+    if message.text.lower().strip() == "отмена":
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Создание промокода отменено.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    code = message.text.strip().upper()
+
+    if " " in code:
+        await message.answer(
+            "❌ Промокод не должен содержать пробелов."
+        )
+        return
+
+    await state.update_data(
+        new_promo_code=code
+    )
+
+    await state.set_state(
+        AdminPromoState.waiting_for_discount
+    )
+
+    await message.answer(
+        f"""
+🎟️ Код: <b>{html.escape(code)}</b>
+
+Теперь отправь размер скидки в процентах.
+
+Например:
+
+<b>10</b>
+
+Это будет скидка 10%.
+
+❌ Для отмены напиши: <b>отмена</b>
+""",
+        parse_mode="HTML"
+    )
+
+
+@dp.message(AdminPromoState.waiting_for_discount)
+async def receive_admin_promo_discount(
+    message: Message,
+    state: FSMContext
+):
+
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.text:
+        await message.answer(
+            "🙂 Отправь число от 1 до 100."
+        )
+        return
+
+    if message.text.lower().strip() == "отмена":
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Создание промокода отменено.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    try:
+
+        discount = int(
+            message.text.strip()
+        )
+
+    except ValueError:
+
+        await message.answer(
+            "❌ Введи целое число от 1 до 100."
+        )
+
+        return
+
+    if discount < 1 or discount > 100:
+
+        await message.answer(
+            "❌ Скидка должна быть от 1 до 100%."
+        )
+
+        return
+
+    data = await state.get_data()
+
+    code = data.get(
+        "new_promo_code"
+    )
+
+    create_promocode(
+        code,
+        discount
+    )
+
+    await state.clear()
+
+    await message.answer(
+        f"""
+✅ <b>ПРОМОКОД СОЗДАН!</b>
+
+🎟️ Код: <b>{html.escape(code)}</b>
+🔥 Скидка: <b>{discount}%</b>
+
+Теперь пользователи смогут его активировать.
+""",
+        reply_markup=admin_menu(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# РАССЫЛКА
 # =========================================================
 
 @dp.callback_query(F.data == "admin_broadcast")
@@ -1090,10 +1812,6 @@ async def admin_broadcast(
     await callback.answer()
 
 
-# =========================================================
-# ТЕКСТ РАССЫЛКИ
-# =========================================================
-
 @dp.message(BroadcastState.waiting_for_message)
 async def receive_broadcast(
     message: Message,
@@ -1104,9 +1822,11 @@ async def receive_broadcast(
         return
 
     if not message.text:
+
         await message.answer(
             "🙂 Для рассылки нужен обычный текст."
         )
+
         return
 
     if message.text.lower() == "отмена":
@@ -1124,7 +1844,9 @@ async def receive_broadcast(
         broadcast_text=message.text
     )
 
-    safe_text = html.escape(message.text)
+    safe_text = html.escape(
+        message.text
+    )
 
     keyboard = InlineKeyboardBuilder()
 
@@ -1223,6 +1945,7 @@ async def confirm_broadcast(
             await asyncio.sleep(0.05)
 
         except Exception:
+
             failed += 1
 
     await state.clear()
@@ -1269,6 +1992,7 @@ async def cancel_broadcast(
 
     await callback.message.edit_text(
         "❌ <b>Рассылка отменена.</b>",
+        reply_markup=admin_menu(),
         parse_mode="HTML"
     )
 
@@ -1280,7 +2004,10 @@ async def cancel_broadcast(
 # =========================================================
 
 @dp.callback_query(F.data == "admin_back")
-async def admin_back(callback: CallbackQuery):
+async def admin_back(
+    callback: CallbackQuery,
+    state: FSMContext
+):
 
     if not is_admin(callback.from_user.id):
         await callback.answer(
@@ -1288,6 +2015,8 @@ async def admin_back(callback: CallbackQuery):
             show_alert=True
         )
         return
+
+    await state.clear()
 
     await callback.message.edit_text(
         """
@@ -1307,7 +2036,9 @@ async def admin_back(callback: CallbackQuery):
 # =========================================================
 
 @dp.callback_query(F.data == "admin_close")
-async def admin_close(callback: CallbackQuery):
+async def admin_close(
+    callback: CallbackQuery
+):
 
     if not is_admin(callback.from_user.id):
         await callback.answer(
@@ -1332,6 +2063,7 @@ async def back(
 ):
 
     await state.clear()
+
     save_user(callback.from_user.id)
 
     text = """
@@ -1341,7 +2073,7 @@ async def back(
 
 Здесь ты можешь оформить заявку на индивидуальный учебный проект или посмотреть дополнительную информацию.
 
-🏫 Бот создан для учеников <b>МБОУ-СОШ №19 г. Армавира</b>.
+🏫 Бот создан специально для учеников МБОУ-СОШ №19 г. Армавира.
 
 👇 Что тебя интересует?
 """
@@ -1360,7 +2092,9 @@ async def back(
 # =========================================================
 
 @dp.message()
-async def random_message(message: Message):
+async def random_message(
+    message: Message
+):
 
     save_user(message.from_user.id)
 
@@ -1372,7 +2106,7 @@ async def random_message(message: Message):
 
 📚 «Оформить заявку»
 
-А если у тебя просто вопрос — выбери раздел «Связаться».
+А если у тебя просто вопрос — выбери раздел «📞 Связаться».
 """,
         reply_markup=main_menu(),
         parse_mode="HTML"
