@@ -22,6 +22,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не найден в переменных окружения")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
@@ -29,6 +32,7 @@ USERS_FILE = "users.json"
 ORDERS_FILE = "orders.json"
 PROMOCODES_FILE = "promocodes.json"
 
+# ЦЕНЫ
 PRICE_9 = 800
 PRICE_10 = 1000
 
@@ -79,7 +83,14 @@ def load_orders():
     return load_json(ORDERS_FILE, [])
 
 
-def save_order(user, order_text, grade, price, promo_code=None, discount=0):
+def save_order(
+    user,
+    order_text,
+    grade,
+    price,
+    promo_code=None,
+    discount=0
+):
     orders = load_orders()
 
     orders.append({
@@ -209,7 +220,7 @@ def main_menu():
 
 
 # =========================================================
-# КНОПКА НАЗАД
+# НАЗАД
 # =========================================================
 
 def back_to_menu():
@@ -289,7 +300,7 @@ def order_confirmation():
 
 
 # =========================================================
-# КНОПКА ОТВЕТИТЬ
+# ОТВЕТ АДМИНА
 # =========================================================
 
 def admin_reply_button(user_id):
@@ -410,13 +421,11 @@ async def prices(callback: CallbackQuery):
 
 ━━━━━━━━━━━━━━
 
-Цена указана за проект под ключ.
+Цена точная за проект под ключ в указанном диапазоне.
 
-В стоимость входит работа в соответствии с согласованными требованиями к проекту.
+🎟️ При наличии промокода можно получить скидку.
 
-🎟️ Если у тебя есть промокод, его можно активировать в главном меню.
-
-⚠️ Стоимость может быть выше при очень сжатых сроках — чем ближе дата сдачи проекта, тем выше цена.
+⚠️ Чем ближе дата сдачи проекта, тем выше может становиться цена.
 """
 
     await callback.message.edit_text(
@@ -429,7 +438,7 @@ async def prices(callback: CallbackQuery):
 
 
 # =========================================================
-# ПРОМОКОД — ПОЛЬЗОВАТЕЛЬ
+# ПРОМОКОД
 # =========================================================
 
 @dp.callback_query(F.data == "promo")
@@ -440,14 +449,20 @@ async def promo_start(
 
     save_user(callback.from_user.id)
 
-    await state.set_state(PromoState.waiting_for_code)
+    # Не очищаем старые данные без необходимости.
+    # Если пользователь уже активировал промокод,
+    # он останется сохранённым.
+
+    await state.set_state(
+        PromoState.waiting_for_code
+    )
 
     text = """
 🎟️ <b>ПРОМОКОД</b>
 
 Если у тебя есть промокод — отправь его сюда.
 
-Я проверю его действительность и сообщу размер скидки.
+Я проверю его подлинность и сообщу размер скидки.
 
 ❌ Чтобы отменить, напиши <b>отмена</b>.
 """
@@ -477,33 +492,57 @@ async def receive_promo(
         return
 
     if message.text.lower().strip() == "отмена":
+
+        # Полностью отменяем ввод,
+        # но специально НЕ удаляем уже активированный промокод.
+        data = await state.get_data()
+
+        promo_code = data.get("promo_code")
+        discount = data.get("discount", 0)
+
         await state.clear()
 
+        if promo_code:
+            await state.update_data(
+                promo_code=promo_code,
+                discount=discount
+            )
+
         await message.answer(
-            "❌ Активация промокода отменена.",
+            "❌ Ввод промокода отменён.",
             reply_markup=main_menu()
         )
+
         return
 
     code = message.text.strip().upper()
+
     promo = check_promocode(code)
 
     if not promo:
+
         await message.answer(
-            "❌ Такой промокод не найден или уже недействителен.\n\n"
-            "Проверь код и попробуй ещё раз.",
-            reply_markup=back_to_menu()
+            """
+❌ <b>Промокод не найден</b>
+
+Такого промокода нет или он уже недействителен.
+
+Проверь код и попробуй ещё раз.
+""",
+            reply_markup=back_to_menu(),
+            parse_mode="HTML"
         )
+
         return
 
     discount = promo["discount"]
 
+    # ВАЖНО:
+    # сохраняем промокод в FSM и НЕ делаем state.clear()
     await state.update_data(
         promo_code=code,
         discount=discount
     )
-
-    await state.clear()
 
     text = f"""
 ✅ <b>ПРОМОКОД АКТИВИРОВАН!</b>
@@ -511,9 +550,9 @@ async def receive_promo(
 🎟️ Код: <b>{html.escape(code)}</b>
 🔥 Скидка: <b>{discount}%</b>
 
-Скидка будет применена автоматически при оформлении заявки.
+Промокод сохранён и автоматически применится при оформлении заявки.
 
-👇 Можешь сразу перейти к оформлению:
+👇 Можешь перейти к оформлению:
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -549,33 +588,51 @@ async def order(
 
     save_user(callback.from_user.id)
 
+    # Получаем сохранённый промокод ДО изменения состояния
     data = await state.get_data()
 
     promo_code = data.get("promo_code")
     discount = data.get("discount", 0)
 
+    # Очищаем состояние заявки,
+    # но сразу возвращаем данные промокода.
     await state.clear()
 
-    if promo_code:
-        await state.update_data(
-            promo_code=promo_code,
-            discount=discount
-        )
-
-    text = """
-📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
-
-Сначала выбери свой класс:
-
-👇
-"""
-
-    await state.set_state(OrderState.waiting_for_order)
-
-    # Временно сохраняем состояние оформления
     await state.update_data(
+        promo_code=promo_code,
+        discount=discount,
         selecting_grade=True
     )
+
+    await state.set_state(
+        OrderState.waiting_for_order
+    )
+
+    if promo_code and discount:
+        promo_info = f"""
+🎟️ <b>Промокод применён</b>
+
+Код: <b>{html.escape(promo_code)}</b>
+🔥 Скидка: <b>{discount}%</b>
+
+Сейчас выбери класс — после этого я покажу цену со скидкой.
+"""
+    else:
+        promo_info = """
+🎟️ Промокод не применён.
+
+Если у тебя есть промокод, его можно активировать через главное меню.
+"""
+
+    text = f"""
+📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
+
+{promo_info}
+
+━━━━━━━━━━━━━━
+
+🎓 <b>Выбери свой класс:</b>
+"""
 
     await callback.message.edit_text(
         text,
@@ -587,7 +644,7 @@ async def order(
 
 
 # =========================================================
-# ВЫБОР 9 КЛАССА
+# 9 КЛАСС
 # =========================================================
 
 @dp.callback_query(
@@ -608,7 +665,7 @@ async def grade_9(
 
 
 # =========================================================
-# ВЫБОР 10 КЛАССА
+# 10 КЛАСС
 # =========================================================
 
 @dp.callback_query(
@@ -629,7 +686,7 @@ async def grade_10(
 
 
 # =========================================================
-# ОБРАБОТКА ВЫБОРА КЛАССА
+# ОБРАБОТКА КЛАССА
 # =========================================================
 
 async def select_grade(
@@ -643,6 +700,15 @@ async def select_grade(
 
     promo_code = data.get("promo_code")
     discount = data.get("discount", 0)
+
+    # Проверяем, что скидка является числом
+    try:
+        discount = int(discount)
+    except (ValueError, TypeError):
+        discount = 0
+
+    if discount < 0 or discount > 100:
+        discount = 0
 
     final_price = base_price
 
@@ -660,23 +726,26 @@ async def select_grade(
         selecting_grade=False
     )
 
-    if discount:
+    if promo_code and discount:
+
         price_text = f"""
 💰 Обычная цена: <s>{base_price} ₽</s>
+
+🎟️ Промокод: <b>{html.escape(promo_code)}</b>
+
 🔥 Скидка: <b>{discount}%</b>
-🎉 Цена со скидкой: <b>{final_price} ₽</b>
 
-🎟️ Промокод <b>{html.escape(promo_code)}</b> применён.
+🎉 <b>Цена со скидкой: {final_price} ₽</b>
 """
-    else:
-        price_text = f"""
-💰 Цена за проект под ключ: <b>{base_price} ₽</b>
 
-🎟️ Промокод не применён.
+    else:
+
+        price_text = f"""
+💰 <b>Цена за проект под ключ: {base_price} ₽</b>
 """
 
     text = f"""
-✅ Ты выбрал: <b>{grade}</b>
+✅ <b>Выбран {grade}</b>
 
 {price_text}
 
@@ -684,9 +753,9 @@ async def select_grade(
 
 Теперь отправь <b>одним сообщением всю информацию по проекту</b>.
 
-Можешь написать тему, предмет, требования, срок сдачи и всё остальное, что считаешь важным.
+Напиши тему, предмет, требования, срок сдачи и всё остальное, что нужно знать о работе.
 
-После этого я покажу заявку перед отправкой.
+После этого я покажу тебе заявку перед отправкой.
 """
 
     await callback.message.edit_text(
@@ -713,22 +782,28 @@ async def receive_order(
     data = await state.get_data()
 
     if data.get("selecting_grade"):
+
         await message.answer(
             "👇 Сначала выбери класс кнопкой выше.",
             reply_markup=grade_keyboard()
         )
+
         return
 
     if not message.text:
+
         await message.answer(
-            "🙂 Отправь, пожалуйста, информацию обычным текстовым сообщением.",
+            "🙂 Отправь информацию обычным текстовым сообщением.",
             reply_markup=order_back_button()
         )
+
         return
 
     await state.update_data(
         order_text=message.text
     )
+
+    data = await state.get_data()
 
     grade = data.get(
         "grade",
@@ -754,12 +829,15 @@ async def receive_order(
     )
 
     if promo_code and discount:
+
         price_info = (
             f"🎟️ Промокод: <b>{html.escape(promo_code)}</b>\n"
             f"🔥 Скидка: <b>{discount}%</b>\n"
-            f"💰 Цена: <b>{final_price} ₽</b>"
+            f"💰 Цена со скидкой: <b>{final_price} ₽</b>"
         )
+
     else:
+
         price_info = (
             f"💰 Цена: <b>{final_price} ₽</b>"
         )
@@ -866,12 +944,15 @@ async def send_order(
     )
 
     if promo_code and discount:
+
         promo_info = (
             f"🎟️ Промокод: <b>{html.escape(promo_code)}</b>\n"
             f"🔥 Скидка: <b>{discount}%</b>\n"
             f"💰 Цена: <b>{final_price} ₽</b>"
         )
+
     else:
+
         promo_info = (
             f"💰 Цена: <b>{final_price} ₽</b>"
         )
@@ -946,14 +1027,41 @@ async def edit_order(
         "не указан"
     )
 
+    promo_code = data.get(
+        "promo_code"
+    )
+
+    discount = data.get(
+        "discount",
+        0
+    )
+
     await state.set_state(
         OrderState.waiting_for_order
+    )
+
+    await state.update_data(
+        grade=grade,
+        promo_code=promo_code,
+        discount=discount,
+        selecting_grade=False
     )
 
     text = f"""
 ✏️ <b>ЗАПОЛНИМ ЗАНОВО</b>
 
 🎓 Класс: <b>{html.escape(grade)}</b>
+"""
+
+    if promo_code and discount:
+
+        text += f"""
+🎟️ Промокод: <b>{html.escape(promo_code)}</b>
+🔥 Скидка: <b>{discount}%</b>
+"""
+
+    text += """
+━━━━━━━━━━━━━━
 
 Отправь <b>одним сообщением всю информацию по проекту</b>.
 
@@ -1102,7 +1210,7 @@ async def contact(
 
 
 # =========================================================
-# ПОЛУЧЕНИЕ СООБЩЕНИЯ
+# СООБЩЕНИЕ АДМИНУ
 # =========================================================
 
 @dp.message(ContactState.waiting_for_message)
@@ -1114,10 +1222,12 @@ async def receive_contact_message(
     save_user(message.from_user.id)
 
     if not message.text:
+
         await message.answer(
             "🙂 Напиши, пожалуйста, сообщение обычным текстом.",
             reply_markup=back_to_menu()
         )
+
         return
 
     user = message.from_user
@@ -1187,21 +1297,27 @@ async def reply_to_user(
 ):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "У тебя нет доступа.",
             show_alert=True
         )
+
         return
 
     try:
+
         user_id = int(
             callback.data.split("_")[1]
         )
+
     except (ValueError, IndexError):
+
         await callback.answer(
             "Ошибка пользователя.",
             show_alert=True
         )
+
         return
 
     await state.clear()
@@ -1244,12 +1360,15 @@ async def send_admin_reply(
         return
 
     if not message.text:
+
         await message.answer(
             "🙂 Отправь обычный текст."
         )
+
         return
 
-    if message.text.lower() == "отмена":
+    if message.text.lower().strip() == "отмена":
+
         await state.clear()
 
         await message.answer(
@@ -1266,6 +1385,7 @@ async def send_admin_reply(
     )
 
     if not user_id:
+
         await state.clear()
 
         await message.answer(
@@ -1311,7 +1431,7 @@ async def send_admin_reply(
 
 
 # =========================================================
-# АДМИН-ПАНЕЛЬ
+# /ADMIN
 # =========================================================
 
 @dp.message(Command("admin"))
@@ -1321,9 +1441,11 @@ async def admin_command(
 ):
 
     if not is_admin(message.from_user.id):
+
         await message.answer(
             "🙂 У тебя нет доступа к этой команде."
         )
+
         return
 
     await state.clear()
@@ -1349,15 +1471,23 @@ async def admin_command(
 async def admin_stats(callback: CallbackQuery):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     users = load_users()
     orders = load_orders()
     promos = load_promocodes()
+
+    average = (
+        round(len(orders) / len(users), 2)
+        if users
+        else 0
+    )
 
     text = f"""
 📊 <b>СТАТИСТИКА</b>
@@ -1369,7 +1499,7 @@ async def admin_stats(callback: CallbackQuery):
 🎟️ Промокодов: <b>{len(promos)}</b>
 
 💬 Среднее количество заявок на пользователя:
-<b>{round(len(orders) / len(users), 2) if users else 0}</b>
+<b>{average}</b>
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -1396,10 +1526,12 @@ async def admin_stats(callback: CallbackQuery):
 async def admin_users(callback: CallbackQuery):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     users = load_users()
@@ -1447,10 +1579,12 @@ async def admin_users(callback: CallbackQuery):
 async def admin_orders(callback: CallbackQuery):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     orders = load_orders()
@@ -1477,12 +1611,12 @@ async def admin_orders(callback: CallbackQuery):
 
             username = (
                 f"@{order_item['username']}"
-                if order_item["username"]
+                if order_item.get("username")
                 else "не указан"
             )
 
             safe_name = html.escape(
-                order_item["name"]
+                order_item.get("name", "Без имени")
             )
 
             safe_username = html.escape(
@@ -1490,11 +1624,16 @@ async def admin_orders(callback: CallbackQuery):
             )
 
             safe_text = html.escape(
-                order_item["text"]
+                order_item.get("text", "")
             )
 
             grade = html.escape(
-                str(order_item.get("grade", "не указан"))
+                str(
+                    order_item.get(
+                        "grade",
+                        "не указан"
+                    )
+                )
             )
 
             price = order_item.get(
@@ -1502,13 +1641,32 @@ async def admin_orders(callback: CallbackQuery):
                 0
             )
 
+            promo_code = order_item.get(
+                "promo_code",
+                ""
+            )
+
+            discount = order_item.get(
+                "discount",
+                0
+            )
+
+            promo_info = ""
+
+            if promo_code:
+
+                promo_info = (
+                    f"\n🎟️ {html.escape(promo_code)}"
+                    f" — {discount}%"
+                )
+
             text += f"""
 <b>{number}. {safe_name}</b>
 
 🔗 {safe_username}
-🆔 {order_item['user_id']}
+🆔 {order_item.get('user_id', 'не указан')}
 🎓 {grade}
-💰 {price} ₽
+💰 {price} ₽{promo_info}
 
 {safe_text}
 
@@ -1539,10 +1697,12 @@ async def admin_orders(callback: CallbackQuery):
 async def admin_promos(callback: CallbackQuery):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     promos = load_promocodes()
@@ -1565,7 +1725,7 @@ async def admin_promos(callback: CallbackQuery):
 
             promo_text += (
                 f"🎟️ <b>{html.escape(code)}</b> — "
-                f"{promo['discount']}% — {status}\n"
+                f"{promo.get('discount', 0)}% — {status}\n"
             )
 
     text = f"""
@@ -1612,10 +1772,12 @@ async def admin_create_promo(
 ):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await state.set_state(
@@ -1650,9 +1812,11 @@ async def receive_admin_promo_code(
         return
 
     if not message.text:
+
         await message.answer(
             "🙂 Отправь промокод обычным текстом."
         )
+
         return
 
     if message.text.lower().strip() == "отмена":
@@ -1669,9 +1833,19 @@ async def receive_admin_promo_code(
     code = message.text.strip().upper()
 
     if " " in code:
+
         await message.answer(
             "❌ Промокод не должен содержать пробелов."
         )
+
+        return
+
+    if len(code) > 30:
+
+        await message.answer(
+            "❌ Промокод слишком длинный."
+        )
+
         return
 
     await state.update_data(
@@ -1710,9 +1884,11 @@ async def receive_admin_promo_discount(
         return
 
     if not message.text:
+
         await message.answer(
             "🙂 Отправь число от 1 до 100."
         )
+
         return
 
     if message.text.lower().strip() == "отмена":
@@ -1754,6 +1930,17 @@ async def receive_admin_promo_discount(
         "new_promo_code"
     )
 
+    if not code:
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Ошибка: промокод не найден.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
     create_promocode(
         code,
         discount
@@ -1766,6 +1953,7 @@ async def receive_admin_promo_discount(
 ✅ <b>ПРОМОКОД СОЗДАН!</b>
 
 🎟️ Код: <b>{html.escape(code)}</b>
+
 🔥 Скидка: <b>{discount}%</b>
 
 Теперь пользователи смогут его активировать.
@@ -1786,10 +1974,12 @@ async def admin_broadcast(
 ):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await state.set_state(
@@ -1829,7 +2019,7 @@ async def receive_broadcast(
 
         return
 
-    if message.text.lower() == "отмена":
+    if message.text.lower().strip() == "отмена":
 
         await state.clear()
 
@@ -2000,7 +2190,7 @@ async def cancel_broadcast(
 
 
 # =========================================================
-# ВОЗВРАТ В АДМИН-ПАНЕЛЬ
+# АДМИН-ПАНЕЛЬ НАЗАД
 # =========================================================
 
 @dp.callback_query(F.data == "admin_back")
@@ -2010,10 +2200,12 @@ async def admin_back(
 ):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await state.clear()
@@ -2041,10 +2233,12 @@ async def admin_close(
 ):
 
     if not is_admin(callback.from_user.id):
+
         await callback.answer(
             "Нет доступа.",
             show_alert=True
         )
+
         return
 
     await callback.message.delete()
@@ -2053,7 +2247,7 @@ async def admin_close(
 
 
 # =========================================================
-# ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
+# ГЛАВНОЕ МЕНЮ
 # =========================================================
 
 @dp.callback_query(F.data == "back")
