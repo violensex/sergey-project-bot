@@ -26,18 +26,32 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 USERS_FILE = "users.json"
+ORDERS_FILE = "orders.json"
 
 
 # =========================================================
-# СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЕЙ
+# РАБОТА С ФАЙЛАМИ
+# =========================================================
+
+def load_json(filename, default):
+    try:
+        with open(filename, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def save_json(filename, data):
+    with open(filename, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+
+
+# =========================================================
+# ПОЛЬЗОВАТЕЛИ
 # =========================================================
 
 def load_users():
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as file:
-            return json.load(file)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+    return load_json(USERS_FILE, [])
 
 
 def save_user(user_id):
@@ -45,9 +59,28 @@ def save_user(user_id):
 
     if user_id not in users:
         users.append(user_id)
+        save_json(USERS_FILE, users)
 
-        with open(USERS_FILE, "w", encoding="utf-8") as file:
-            json.dump(users, file)
+
+# =========================================================
+# ЗАЯВКИ
+# =========================================================
+
+def load_orders():
+    return load_json(ORDERS_FILE, [])
+
+
+def save_order(user, order_text):
+    orders = load_orders()
+
+    orders.append({
+        "user_id": user.id,
+        "name": user.full_name,
+        "username": user.username or "",
+        "text": order_text
+    })
+
+    save_json(ORDERS_FILE, orders)
 
 
 # =========================================================
@@ -110,7 +143,7 @@ def main_menu():
 
 
 # =========================================================
-# КНОПКА НАЗАД
+# ОБЫЧНАЯ КНОПКА НАЗАД
 # =========================================================
 
 def back_to_menu():
@@ -163,7 +196,7 @@ def order_confirmation():
 
 
 # =========================================================
-# КНОПКА ОТВЕТИТЬ ПОЛЬЗОВАТЕЛЮ
+# КНОПКА ОТВЕТИТЬ
 # =========================================================
 
 def admin_reply_button(user_id):
@@ -175,6 +208,51 @@ def admin_reply_button(user_id):
     )
 
     return keyboard.as_markup()
+
+
+# =========================================================
+# АДМИН-ПАНЕЛЬ
+# =========================================================
+
+def admin_menu():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="📊 Статистика",
+        callback_data="admin_stats"
+    )
+
+    keyboard.button(
+        text="📢 Рассылка",
+        callback_data="admin_broadcast"
+    )
+
+    keyboard.button(
+        text="👥 Пользователи",
+        callback_data="admin_users"
+    )
+
+    keyboard.button(
+        text="📋 Последние заявки",
+        callback_data="admin_orders"
+    )
+
+    keyboard.button(
+        text="❌ Закрыть",
+        callback_data="admin_close"
+    )
+
+    keyboard.adjust(2, 2, 1)
+
+    return keyboard.as_markup()
+
+
+# =========================================================
+# ПРОВЕРКА АДМИНА
+# =========================================================
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID
 
 
 # =========================================================
@@ -218,7 +296,673 @@ async def start(message: Message, state: FSMContext):
 
 
 # =========================================================
-# ЧТО ВХОДИТ В РАБОТУ
+# АДМИН-ПАНЕЛЬ /admin
+# =========================================================
+
+@dp.message(Command("admin"))
+async def admin_command(message: Message, state: FSMContext):
+
+    if not is_admin(message.from_user.id):
+        await message.answer("🙂 У тебя нет доступа к этой команде.")
+        return
+
+    await state.clear()
+
+    await message.answer(
+        """
+🔐 <b>АДМИН-ПАНЕЛЬ</b>
+
+Добро пожаловать в панель управления SERGEY PROJECT.
+
+👇 Выбери нужный раздел:
+""",
+        reply_markup=admin_menu(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# СТАТИСТИКА
+# =========================================================
+
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    users = load_users()
+    orders = load_orders()
+
+    text = f"""
+📊 <b>СТАТИСТИКА</b>
+
+👥 Пользователей: <b>{len(users)}</b>
+
+📚 Всего заявок: <b>{len(orders)}</b>
+
+💬 Среднее количество заявок на пользователя:
+<b>{round(len(orders) / len(users), 2) if users else 0}</b>
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="◀️ Админ-панель",
+        callback_data="admin_back"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПОЛЬЗОВАТЕЛИ
+# =========================================================
+
+@dp.callback_query(F.data == "admin_users")
+async def admin_users(callback: CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    users = load_users()
+
+    text = f"""
+👥 <b>ПОЛЬЗОВАТЕЛИ</b>
+
+Сейчас бот знает о:
+
+<b>{len(users)}</b> пользователях.
+
+Все пользователи автоматически добавляются в список после нажатия /start.
+
+Этот список используется для рассылки.
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="📢 Сделать рассылку",
+        callback_data="admin_broadcast"
+    )
+
+    keyboard.button(
+        text="◀️ Админ-панель",
+        callback_data="admin_back"
+    )
+
+    keyboard.adjust(1)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПОСЛЕДНИЕ ЗАЯВКИ
+# =========================================================
+
+@dp.callback_query(F.data == "admin_orders")
+async def admin_orders(callback: CallbackQuery):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    orders = load_orders()
+
+    if not orders:
+        text = """
+📋 <b>ПОСЛЕДНИЕ ЗАЯВКИ</b>
+
+Пока заявок нет.
+"""
+
+    else:
+        recent_orders = orders[-5:]
+        recent_orders.reverse()
+
+        text = "📋 <b>ПОСЛЕДНИЕ ЗАЯВКИ</b>\n\n"
+
+        for number, order in enumerate(recent_orders, 1):
+
+            username = (
+                f"@{order['username']}"
+                if order["username"]
+                else "не указан"
+            )
+
+            safe_name = html.escape(order["name"])
+            safe_username = html.escape(username)
+            safe_text = html.escape(order["text"])
+
+            text += f"""
+<b>{number}. {safe_name}</b>
+🔗 {safe_username}
+🆔 {order['user_id']}
+
+{safe_text}
+
+━━━━━━━━━━━━━━
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="◀️ Админ-панель",
+        callback_data="admin_back"
+    )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# НАЧАЛО РАССЫЛКИ
+# =========================================================
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    await state.set_state(BroadcastState.waiting_for_message)
+
+    await callback.message.edit_text(
+        """
+📢 <b>РАССЫЛКА</b>
+
+Отправь следующим сообщением текст, который хочешь отправить пользователям.
+
+После этого я покажу предпросмотр и попрошу подтвердить отправку.
+
+❌ Чтобы отменить — напиши <b>отмена</b>.
+""",
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ТЕКСТ РАССЫЛКИ
+# =========================================================
+
+@dp.message(BroadcastState.waiting_for_message)
+async def receive_broadcast(
+    message: Message,
+    state: FSMContext
+):
+
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.text:
+        await message.answer(
+            "🙂 Для рассылки нужен обычный текст."
+        )
+        return
+
+    if message.text.lower() == "отмена":
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Рассылка отменена.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    await state.update_data(
+        broadcast_text=message.text
+    )
+
+    safe_text = html.escape(message.text)
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="📢 Отправить всем",
+        callback_data="confirm_broadcast"
+    )
+
+    keyboard.button(
+        text="❌ Отменить",
+        callback_data="cancel_broadcast"
+    )
+
+    keyboard.adjust(1)
+
+    await state.set_state(
+        BroadcastState.confirmation
+    )
+
+    await message.answer(
+        f"""
+📢 <b>ПРЕДПРОСМОТР</b>
+
+━━━━━━━━━━━━━━
+
+{safe_text}
+
+━━━━━━━━━━━━━━
+
+👥 Получателей: <b>{len(load_users())}</b>
+
+Отправить сообщение всем?
+""",
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# ПОДТВЕРЖДЕНИЕ РАССЫЛКИ
+# =========================================================
+
+@dp.callback_query(
+    BroadcastState.confirmation,
+    F.data == "confirm_broadcast"
+)
+async def confirm_broadcast(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if not is_admin(callback.from_user.id):
+        return
+
+    data = await state.get_data()
+
+    broadcast_text = data.get(
+        "broadcast_text",
+        ""
+    )
+
+    users = load_users()
+
+    await callback.message.edit_text(
+        "📢 <b>Рассылка началась...</b>\n\n"
+        "Пожалуйста, подожди.",
+        parse_mode="HTML"
+    )
+
+    success = 0
+    failed = 0
+
+    safe_text = html.escape(broadcast_text)
+
+    for user_id in users:
+
+        if user_id == ADMIN_ID:
+            continue
+
+        try:
+
+            await bot.send_message(
+                user_id,
+                f"""
+📢 <b>SERGEY PROJECT</b>
+
+{safe_text}
+""",
+                parse_mode="HTML"
+            )
+
+            success += 1
+
+            await asyncio.sleep(0.05)
+
+        except Exception:
+            failed += 1
+
+    await state.clear()
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="🔐 Админ-панель",
+        callback_data="admin_back"
+    )
+
+    await callback.message.edit_text(
+        f"""
+✅ <b>РАССЫЛКА ЗАВЕРШЕНА</b>
+
+📨 Успешно отправлено: <b>{success}</b>
+
+❌ Не удалось отправить: <b>{failed}</b>
+""",
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ОТМЕНА РАССЫЛКИ
+# =========================================================
+
+@dp.callback_query(
+    BroadcastState.confirmation,
+    F.data == "cancel_broadcast"
+)
+async def cancel_broadcast(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if not is_admin(callback.from_user.id):
+        return
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        "❌ <b>Рассылка отменена.</b>",
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# НАЧАЛО ЗАЯВКИ
+# =========================================================
+
+@dp.callback_query(F.data == "order")
+async def order(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    save_user(callback.from_user.id)
+
+    await state.set_state(
+        OrderState.waiting_for_order
+    )
+
+    text = """
+📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
+
+Давай быстро разберёмся, что тебе нужно.
+
+Отправь одним сообщением:
+
+🎓 <b>Класс / курс</b>
+📖 <b>Предмет</b>
+📝 <b>Тема проекта</b>
+📅 <b>Когда нужна работа</b>
+📦 <b>Что тебе требуется</b>
+
+Например:
+
+<b>10 класс
+Физика
+Электромагнитная индукция
+Нужно к 25 августа
+Проект + презентация + речь</b>
+
+После этого я покажу тебе заявку перед отправкой.
+
+⚠️ Пока ты не нажмёшь <b>«Отправить заявку»</b>, она никуда не уйдёт.
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=order_back_button(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ПОЛУЧЕНИЕ ЗАЯВКИ
+# =========================================================
+
+@dp.message(OrderState.waiting_for_order)
+async def receive_order(
+    message: Message,
+    state: FSMContext
+):
+
+    save_user(message.from_user.id)
+
+    if not message.text:
+
+        await message.answer(
+            "🙂 Отправь, пожалуйста, информацию обычным текстовым сообщением.",
+            reply_markup=order_back_button()
+        )
+
+        return
+
+    await state.update_data(
+        order_text=message.text
+    )
+
+    user = message.from_user
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "не указан"
+    )
+
+    safe_name = html.escape(user.full_name)
+    safe_username = html.escape(username)
+    safe_order = html.escape(message.text)
+
+    preview = f"""
+📋 <b>ПРОВЕРЬ ЗАЯВКУ</b>
+
+👤 <b>Имя:</b> {safe_name}
+🔗 <b>Username:</b> {safe_username}
+
+━━━━━━━━━━━━━━
+
+📄 <b>Данные проекта:</b>
+
+{safe_order}
+
+━━━━━━━━━━━━━━
+
+Всё верно?
+
+Если всё правильно — нажми <b>«Отправить заявку»</b>.
+
+⚠️ До этого момента заявка <b>не отправлена</b>.
+"""
+
+    await state.set_state(
+        OrderState.confirmation
+    )
+
+    await message.answer(
+        preview,
+        reply_markup=order_confirmation(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# ОТПРАВКА ЗАЯВКИ
+# =========================================================
+
+@dp.callback_query(
+    OrderState.confirmation,
+    F.data == "send_order"
+)
+async def send_order(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    data = await state.get_data()
+
+    order_text = data.get(
+        "order_text",
+        "Информация не указана"
+    )
+
+    user = callback.from_user
+
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "не указан"
+    )
+
+    safe_name = html.escape(user.full_name)
+    safe_username = html.escape(username)
+    safe_order = html.escape(order_text)
+
+    # Сохраняем заявку
+    save_order(
+        user,
+        order_text
+    )
+
+    admin_text = f"""
+📥 <b>НОВАЯ ЗАЯВКА</b>
+
+👤 <b>Клиент:</b> {safe_name}
+🔗 <b>Username:</b> {safe_username}
+🆔 <b>Telegram ID:</b> {user.id}
+
+━━━━━━━━━━━━━━
+
+📄 <b>Заявка:</b>
+
+{safe_order}
+"""
+
+    await bot.send_message(
+        ADMIN_ID,
+        admin_text,
+        parse_mode="HTML",
+        reply_markup=admin_reply_button(user.id)
+    )
+
+    await state.clear()
+
+    text = """
+✅ <b>ЗАЯВКА ОТПРАВЛЕНА!</b>
+
+Готово! Я получил твою заявку.
+
+Скоро свяжусь с тобой, чтобы обсудить детали проекта, сроки и всё необходимое.
+
+🤝 Спасибо, что обратился в SERGEY PROJECT!
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=back_to_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer(
+        "Заявка отправлена! ✅"
+    )
+
+
+# =========================================================
+# ЗАПОЛНИТЬ ЗАНОВО
+# =========================================================
+
+@dp.callback_query(
+    OrderState.confirmation,
+    F.data == "edit_order"
+)
+async def edit_order(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    await state.set_state(
+        OrderState.waiting_for_order
+    )
+
+    text = """
+✏️ <b>ЗАПОЛНИМ ЗАНОВО</b>
+
+Отправь одним сообщением:
+
+🎓 <b>Класс / курс</b>
+📖 <b>Предмет</b>
+📝 <b>Тема проекта</b>
+📅 <b>Когда нужна работа</b>
+📦 <b>Что тебе нужно</b>
+"""
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=order_back_button(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ОТМЕНА ЗАЯВКИ
+# =========================================================
+
+@dp.callback_query(
+    OrderState.confirmation,
+    F.data == "cancel_order"
+)
+async def cancel_order(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        """
+❌ <b>ЗАЯВКА ОТМЕНЕНА</b>
+
+Ничего страшного 🙂
+
+Если захочешь оформить её позже, просто вернись в главное меню.
+""",
+        reply_markup=back_to_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer(
+        "Заявка отменена"
+    )
+
+
+# =========================================================
+# ЧТО ВХОДИТ
 # =========================================================
 
 @dp.callback_query(F.data == "included")
@@ -338,249 +1082,22 @@ async def why(callback: CallbackQuery):
 
 
 # =========================================================
-# НАЧАЛО ОФОРМЛЕНИЯ ЗАЯВКИ
-# =========================================================
-
-@dp.callback_query(F.data == "order")
-async def order(callback: CallbackQuery, state: FSMContext):
-
-    save_user(callback.from_user.id)
-
-    await state.set_state(OrderState.waiting_for_order)
-
-    text = """
-📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
-
-Давай быстро разберёмся, что тебе нужно.
-
-Отправь одним сообщением:
-
-🎓 <b>Класс / курс</b>
-📖 <b>Предмет</b>
-📝 <b>Тема проекта</b>
-📅 <b>Когда нужна работа</b>
-📦 <b>Что тебе требуется</b>
-
-Например:
-
-<b>10 класс
-Физика
-Электромагнитная индукция
-Нужно к 25 августа
-Проект + презентация + речь</b>
-
-После этого я покажу тебе заявку перед отправкой.
-
-⚠️ Пока ты не нажмёшь <b>«Отправить заявку»</b>, она никуда не уйдёт.
-"""
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=order_back_button(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ПОЛУЧЕНИЕ ЗАЯВКИ
-# =========================================================
-
-@dp.message(OrderState.waiting_for_order)
-async def receive_order(message: Message, state: FSMContext):
-
-    save_user(message.from_user.id)
-
-    if not message.text:
-        await message.answer(
-            "🙂 Отправь, пожалуйста, информацию обычным текстовым сообщением.",
-            reply_markup=order_back_button()
-        )
-        return
-
-    await state.update_data(order_text=message.text)
-
-    user = message.from_user
-
-    username = f"@{user.username}" if user.username else "не указан"
-
-    safe_name = html.escape(user.full_name)
-    safe_username = html.escape(username)
-    safe_order = html.escape(message.text)
-
-    preview = f"""
-📋 <b>ПРОВЕРЬ ЗАЯВКУ</b>
-
-👤 <b>Имя:</b> {safe_name}
-🔗 <b>Username:</b> {safe_username}
-
-━━━━━━━━━━━━━━
-
-📄 <b>Данные проекта:</b>
-
-{safe_order}
-
-━━━━━━━━━━━━━━
-
-Всё верно?
-
-Если всё правильно — нажми <b>«Отправить заявку»</b>.
-
-⚠️ До этого момента заявка <b>не отправлена</b>.
-"""
-
-    await state.set_state(OrderState.confirmation)
-
-    await message.answer(
-        preview,
-        reply_markup=order_confirmation(),
-        parse_mode="HTML"
-    )
-
-
-# =========================================================
-# ОТПРАВКА ЗАЯВКИ
-# =========================================================
-
-@dp.callback_query(
-    OrderState.confirmation,
-    F.data == "send_order"
-)
-async def send_order(callback: CallbackQuery, state: FSMContext):
-
-    data = await state.get_data()
-
-    order_text = data.get(
-        "order_text",
-        "Информация не указана"
-    )
-
-    user = callback.from_user
-
-    username = f"@{user.username}" if user.username else "не указан"
-
-    safe_name = html.escape(user.full_name)
-    safe_username = html.escape(username)
-    safe_order = html.escape(order_text)
-
-    admin_text = f"""
-📥 <b>НОВАЯ ЗАЯВКА</b>
-
-👤 <b>Клиент:</b> {safe_name}
-🔗 <b>Username:</b> {safe_username}
-🆔 <b>Telegram ID:</b> {user.id}
-
-━━━━━━━━━━━━━━
-
-📄 <b>Заявка:</b>
-
-{safe_order}
-"""
-
-    await bot.send_message(
-        ADMIN_ID,
-        admin_text,
-        parse_mode="HTML",
-        reply_markup=admin_reply_button(user.id)
-    )
-
-    await state.clear()
-
-    text = """
-✅ <b>ЗАЯВКА ОТПРАВЛЕНА!</b>
-
-Готово! Я получил твою заявку.
-
-Скоро свяжусь с тобой, чтобы обсудить детали проекта, сроки и всё необходимое.
-
-🤝 Спасибо, что обратился в SERGEY PROJECT!
-"""
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=back_to_menu(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer("Заявка отправлена! ✅")
-
-
-# =========================================================
-# ЗАПОЛНИТЬ ЗАНОВО
-# =========================================================
-
-@dp.callback_query(
-    OrderState.confirmation,
-    F.data == "edit_order"
-)
-async def edit_order(callback: CallbackQuery, state: FSMContext):
-
-    await state.set_state(OrderState.waiting_for_order)
-
-    text = """
-✏️ <b>ЗАПОЛНИМ ЗАНОВО</b>
-
-Отправь одним сообщением:
-
-🎓 <b>Класс / курс</b>
-📖 <b>Предмет</b>
-📝 <b>Тема проекта</b>
-📅 <b>Когда нужна работа</b>
-📦 <b>Что тебе нужно</b>
-
-Я снова покажу тебе заявку перед отправкой.
-"""
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=order_back_button(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ОТМЕНА ЗАЯВКИ
-# =========================================================
-
-@dp.callback_query(
-    OrderState.confirmation,
-    F.data == "cancel_order"
-)
-async def cancel_order(callback: CallbackQuery, state: FSMContext):
-
-    await state.clear()
-
-    text = """
-❌ <b>ЗАЯВКА ОТМЕНЕНА</b>
-
-Ничего страшного 🙂
-
-Если захочешь оформить её позже, просто вернись в главное меню.
-"""
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=back_to_menu(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer("Заявка отменена")
-
-
-# =========================================================
 # СВЯЗАТЬСЯ
 # =========================================================
 
 @dp.callback_query(F.data == "contact")
-async def contact(callback: CallbackQuery, state: FSMContext):
+async def contact(
+    callback: CallbackQuery,
+    state: FSMContext
+):
 
     save_user(callback.from_user.id)
 
     await state.clear()
-    await state.set_state(ContactState.waiting_for_message)
+
+    await state.set_state(
+        ContactState.waiting_for_message
+    )
 
     text = """
 📞 <b>СВЯЗАТЬСЯ С SERGEY PROJECT</b>
@@ -611,7 +1128,7 @@ async def contact(callback: CallbackQuery, state: FSMContext):
 
 
 # =========================================================
-# ПОЛУЧЕНИЕ СООБЩЕНИЯ ЧЕРЕЗ "СВЯЗАТЬСЯ"
+# ПОЛУЧЕНИЕ СООБЩЕНИЯ
 # =========================================================
 
 @dp.message(ContactState.waiting_for_message)
@@ -623,15 +1140,21 @@ async def receive_contact_message(
     save_user(message.from_user.id)
 
     if not message.text:
+
         await message.answer(
             "🙂 Напиши, пожалуйста, сообщение обычным текстом.",
             reply_markup=order_back_button()
         )
+
         return
 
     user = message.from_user
 
-    username = f"@{user.username}" if user.username else "не указан"
+    username = (
+        f"@{user.username}"
+        if user.username
+        else "не указан"
+    )
 
     safe_name = html.escape(user.full_name)
     safe_username = html.escape(username)
@@ -660,16 +1183,14 @@ async def receive_contact_message(
 
     await state.clear()
 
-    text = """
+    await message.answer(
+        """
 ✅ <b>СООБЩЕНИЕ ОТПРАВЛЕНО!</b>
 
 Я получил твоё сообщение и скоро отвечу тебе.
 
 🤝 Спасибо, что написал!
-"""
-
-    await message.answer(
-        text,
+""",
         reply_markup=back_to_menu(),
         parse_mode="HTML"
     )
@@ -685,30 +1206,47 @@ async def reply_to_user(
     state: FSMContext
 ):
 
-    if callback.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer(
-            "У тебя нет доступа к этой функции.",
+            "У тебя нет доступа.",
             show_alert=True
         )
         return
 
     try:
-        user_id = int(callback.data.split("_")[1])
+        user_id = int(
+            callback.data.split("_")[1]
+        )
+
     except (ValueError, IndexError):
+
         await callback.answer(
             "Ошибка пользователя.",
             show_alert=True
         )
+
         return
 
     await state.clear()
 
-    await state.update_data(reply_user_id=user_id)
-    await state.set_state(AdminReplyState.waiting_for_reply)
+    await state.update_data(
+        reply_user_id=user_id
+    )
+
+    await state.set_state(
+        AdminReplyState.waiting_for_reply
+    )
 
     await callback.message.answer(
-        "💬 <b>Напиши сообщение пользователю.</b>\n\n"
-        "Оно будет отправлено ему от имени бота.",
+        """
+💬 <b>ОТВЕТ ПОЛЬЗОВАТЕЛЮ</b>
+
+Напиши сообщение, которое хочешь отправить.
+
+Оно будет отправлено пользователю от имени бота.
+
+❌ Чтобы отменить — напиши <b>отмена</b>.
+""",
         parse_mode="HTML"
     )
 
@@ -716,7 +1254,7 @@ async def reply_to_user(
 
 
 # =========================================================
-# ОТПРАВКА ОТВЕТА ПОЛЬЗОВАТЕЛЮ
+# ОТПРАВКА ОТВЕТА
 # =========================================================
 
 @dp.message(AdminReplyState.waiting_for_reply)
@@ -725,25 +1263,47 @@ async def send_admin_reply(
     state: FSMContext
 ):
 
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(message.from_user.id):
         return
 
     if not message.text:
         await message.answer(
-            "🙂 Отправь ответ обычным текстовым сообщением."
+            "🙂 Отправь обычный текст."
         )
         return
 
+    if message.text.lower() == "отмена":
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Ответ отменён.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
     data = await state.get_data()
-    user_id = data.get("reply_user_id")
+
+    user_id = data.get(
+        "reply_user_id"
+    )
 
     if not user_id:
+
         await state.clear()
-        await message.answer("❌ Не удалось определить пользователя.")
+
+        await message.answer(
+            "❌ Не удалось определить пользователя."
+        )
+
         return
 
     try:
-        safe_message = html.escape(message.text)
+
+        safe_message = html.escape(
+            message.text
+        )
 
         await bot.send_message(
             user_id,
@@ -760,187 +1320,42 @@ async def send_admin_reply(
         )
 
         await message.answer(
-            "✅ Сообщение отправлено пользователю."
+            "✅ Сообщение отправлено пользователю.",
+            reply_markup=admin_menu()
         )
 
     except Exception:
+
         await message.answer(
             "❌ Не удалось отправить сообщение.\n\n"
-            "Возможно, пользователь заблокировал бота."
+            "Возможно, пользователь заблокировал бота.",
+            reply_markup=admin_menu()
         )
 
     await state.clear()
 
 
 # =========================================================
-# АДМИН: РАССЫЛКА
+# ВОЗВРАТ В АДМИН-ПАНЕЛЬ
 # =========================================================
 
-@dp.message(Command("broadcast"))
-async def broadcast_start(
-    message: Message,
-    state: FSMContext
-):
+@dp.callback_query(F.data == "admin_back")
+async def admin_back(callback: CallbackQuery):
 
-    if message.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
         return
 
-    await state.clear()
-    await state.set_state(BroadcastState.waiting_for_message)
-
-    await message.answer(
+    await callback.message.edit_text(
         """
-📢 <b>РАССЫЛКА</b>
+🔐 <b>АДМИН-ПАНЕЛЬ</b>
 
-Отправь следующим сообщением текст, который хочешь отправить пользователям.
-
-После этого я покажу тебе предварительный просмотр и попрошу подтвердить отправку.
-
-❌ Чтобы выйти — напиши <b>отмена</b>.
+👇 Выбери нужный раздел:
 """,
-        parse_mode="HTML"
-    )
-
-
-# =========================================================
-# ПОЛУЧЕНИЕ ТЕКСТА РАССЫЛКИ
-# =========================================================
-
-@dp.message(BroadcastState.waiting_for_message)
-async def receive_broadcast(
-    message: Message,
-    state: FSMContext
-):
-
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    if not message.text:
-        await message.answer(
-            "🙂 Для рассылки нужен обычный текст."
-        )
-        return
-
-    if message.text.lower() == "отмена":
-        await state.clear()
-
-        await message.answer(
-            "❌ Рассылка отменена."
-        )
-        return
-
-    await state.update_data(
-        broadcast_text=message.text
-    )
-
-    safe_text = html.escape(message.text)
-
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="📢 Отправить всем",
-        callback_data="confirm_broadcast"
-    )
-
-    keyboard.button(
-        text="❌ Отменить",
-        callback_data="cancel_broadcast"
-    )
-
-    keyboard.adjust(1)
-
-    await state.set_state(BroadcastState.confirmation)
-
-    await message.answer(
-        f"""
-📢 <b>ПРЕДПРОСМОТР РАССЫЛКИ</b>
-
-━━━━━━━━━━━━━━
-
-{safe_text}
-
-━━━━━━━━━━━━━━
-
-👥 Получателей сейчас: <b>{len(load_users())}</b>
-
-Отправить это сообщение всем?
-""",
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
-
-
-# =========================================================
-# ПОДТВЕРЖДЕНИЕ РАССЫЛКИ
-# =========================================================
-
-@dp.callback_query(
-    BroadcastState.confirmation,
-    F.data == "confirm_broadcast"
-)
-async def confirm_broadcast(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-
-    if callback.from_user.id != ADMIN_ID:
-        return
-
-    data = await state.get_data()
-
-    broadcast_text = data.get(
-        "broadcast_text",
-        ""
-    )
-
-    users = load_users()
-
-    await callback.message.edit_text(
-        "📢 <b>Рассылка началась...</b>\n\n"
-        "Пожалуйста, подожди.",
-        parse_mode="HTML"
-    )
-
-    success = 0
-    failed = 0
-
-    safe_text = html.escape(broadcast_text)
-
-    for user_id in users:
-
-        if user_id == ADMIN_ID:
-            continue
-
-        try:
-
-            await bot.send_message(
-                user_id,
-                f"""
-📢 <b>SERGEY PROJECT</b>
-
-{safe_text}
-""",
-                parse_mode="HTML"
-            )
-
-            success += 1
-
-            # Небольшая пауза между сообщениями.
-            await asyncio.sleep(0.05)
-
-        except Exception:
-            failed += 1
-
-    await state.clear()
-
-    await callback.message.edit_text(
-        f"""
-✅ <b>РАССЫЛКА ЗАВЕРШЕНА</b>
-
-📨 Успешно отправлено: <b>{success}</b>
-
-❌ Не удалось отправить: <b>{failed}</b>
-""",
+        reply_markup=admin_menu(),
         parse_mode="HTML"
     )
 
@@ -948,27 +1363,20 @@ async def confirm_broadcast(
 
 
 # =========================================================
-# ОТМЕНА РАССЫЛКИ
+# ЗАКРЫТЬ АДМИН-ПАНЕЛЬ
 # =========================================================
 
-@dp.callback_query(
-    BroadcastState.confirmation,
-    F.data == "cancel_broadcast"
-)
-async def cancel_broadcast(
-    callback: CallbackQuery,
-    state: FSMContext
-):
+@dp.callback_query(F.data == "admin_close")
+async def admin_close(callback: CallbackQuery):
 
-    if callback.from_user.id != ADMIN_ID:
+    if not is_admin(callback.from_user.id):
+        await callback.answer(
+            "Нет доступа.",
+            show_alert=True
+        )
         return
 
-    await state.clear()
-
-    await callback.message.edit_text(
-        "❌ <b>Рассылка отменена.</b>",
-        parse_mode="HTML"
-    )
+    await callback.message.delete()
 
     await callback.answer()
 
@@ -1017,7 +1425,8 @@ async def random_message(message: Message):
 
     save_user(message.from_user.id)
 
-    text = """
+    await message.answer(
+        """
 🙂 <b>Не совсем понял тебя.</b>
 
 Если хочешь оформить проект, нажми:
@@ -1025,10 +1434,7 @@ async def random_message(message: Message):
 📚 <b>«Оформить заявку»</b>
 
 А если у тебя просто вопрос — выбери раздел «Связаться».
-"""
-
-    await message.answer(
-        text,
+""",
         reply_markup=main_menu(),
         parse_mode="HTML"
     )
