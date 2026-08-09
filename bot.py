@@ -2,6 +2,7 @@ import asyncio
 import os
 import html
 import json
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart, Command
@@ -119,15 +120,72 @@ def save_promocodes(promocodes):
     save_json(PROMOCODES_FILE, promocodes)
 
 
-def create_promocode(code, discount):
+def create_promocode(
+    code,
+    discount,
+    expires_at,
+    max_uses
+):
     promocodes = load_promocodes()
 
     promocodes[code.upper()] = {
         "discount": discount,
-        "active": True
+        "active": True,
+        "expires_at": expires_at,
+        "max_uses": max_uses,
+        "uses": 0
     }
 
     save_promocodes(promocodes)
+
+
+def get_promo_status(promo):
+    """
+    Возвращает:
+    - "active" — промокод действителен
+    - "expired" — срок истёк
+    - "limit" — закончились использования
+    - "disabled" — промокод выключен
+    """
+
+    if not promo.get("active", True):
+        return "disabled"
+
+    # Проверяем срок действия.
+    # Старые промокоды без expires_at считаются бессрочными.
+    expires_at = promo.get("expires_at")
+
+    if expires_at:
+        try:
+            expiration = datetime.strptime(
+                expires_at,
+                "%d.%m.%Y %H:%M"
+            )
+
+            if datetime.now() > expiration:
+                return "expired"
+
+        except ValueError:
+            # Если дата записана неправильно,
+            # не блокируем старый промокод.
+            pass
+
+    # Проверяем количество использований.
+    # Старые промокоды без max_uses считаются безлимитными.
+    max_uses = promo.get("max_uses")
+
+    if max_uses is not None:
+        try:
+            max_uses = int(max_uses)
+            uses = int(promo.get("uses", 0))
+
+            if uses >= max_uses:
+                return "limit"
+
+        except (ValueError, TypeError):
+            pass
+
+    return "active"
 
 
 def check_promocode(code):
@@ -136,14 +194,45 @@ def check_promocode(code):
     code = code.upper().strip()
 
     if code not in promocodes:
-        return None
+        return None, "not_found"
 
     promo = promocodes[code]
 
-    if not promo.get("active", True):
-        return None
+    status = get_promo_status(promo)
 
-    return promo
+    return promo, status
+
+
+def use_promocode(code):
+    """
+    Засчитывает одно использование промокода.
+    Возвращает True, если использование успешно засчитано.
+    """
+
+    promocodes = load_promocodes()
+
+    code = code.upper().strip()
+
+    if code not in promocodes:
+        return False
+
+    promo = promocodes[code]
+
+    # Перед использованием ещё раз проверяем срок и лимит.
+    status = get_promo_status(promo)
+
+    if status != "active":
+        return False
+
+    current_uses = int(
+        promo.get("uses", 0)
+    )
+
+    promo["uses"] = current_uses + 1
+
+    save_promocodes(promocodes)
+
+    return True
 
 
 # =========================================================
@@ -175,6 +264,8 @@ class PromoState(StatesGroup):
 class AdminPromoState(StatesGroup):
     waiting_for_code = State()
     waiting_for_discount = State()
+    waiting_for_expiration = State()
+    waiting_for_max_uses = State()
 
 
 # =========================================================
@@ -449,10 +540,6 @@ async def promo_start(
 
     save_user(callback.from_user.id)
 
-    # Не очищаем старые данные без необходимости.
-    # Если пользователь уже активировал промокод,
-    # он останется сохранённым.
-
     await state.set_state(
         PromoState.waiting_for_code
     )
@@ -462,7 +549,7 @@ async def promo_start(
 
 Если у тебя есть промокод — отправь его сюда.
 
-Я проверю его подлинность и сообщу размер скидки.
+Я проверю его подлинность, срок действия и наличие свободных использований.
 
 ❌ Чтобы отменить, напиши <b>отмена</b>.
 """
@@ -493,8 +580,6 @@ async def receive_promo(
 
     if message.text.lower().strip() == "отмена":
 
-        # Полностью отменяем ввод,
-        # но специально НЕ удаляем уже активированный промокод.
         data = await state.get_data()
 
         promo_code = data.get("promo_code")
@@ -517,15 +602,19 @@ async def receive_promo(
 
     code = message.text.strip().upper()
 
-    promo = check_promocode(code)
+    promo, status = check_promocode(code)
 
-    if not promo:
+    # -----------------------------------------------------
+    # ПРОМОКОД НЕ НАЙДЕН
+    # -----------------------------------------------------
+
+    if status == "not_found":
 
         await message.answer(
             """
 ❌ <b>Промокод не найден</b>
 
-Такого промокода нет или он уже недействителен.
+Такого промокода не существует.
 
 Проверь код и попробуй ещё раз.
 """,
@@ -535,20 +624,128 @@ async def receive_promo(
 
         return
 
-    discount = promo["discount"]
+    # -----------------------------------------------------
+    # ПРОМОКОД ВЫКЛЮЧЕН
+    # -----------------------------------------------------
 
-    # ВАЖНО:
-    # сохраняем промокод в FSM и НЕ делаем state.clear()
+    if status == "disabled":
+
+        await message.answer(
+            """
+❌ <b>Промокод недействителен</b>
+
+Этот промокод был отключён администратором.
+""",
+            reply_markup=back_to_menu(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ПРОМОКОД ИСТЁК
+    # -----------------------------------------------------
+
+    if status == "expired":
+
+        expires_at = promo.get(
+            "expires_at",
+            ""
+        )
+
+        await message.answer(
+            f"""
+⏰ <b>ПРОМОКОД ИСТЁК</b>
+
+К сожалению, срок действия промокода
+<b>{html.escape(code)}</b> закончился.
+
+📅 Действовал до: <b>{html.escape(expires_at)}</b>
+
+Попробуй другой промокод.
+""",
+            reply_markup=back_to_menu(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ЗАКОНЧИЛИСЬ ИСПОЛЬЗОВАНИЯ
+    # -----------------------------------------------------
+
+    if status == "limit":
+
+        max_uses = promo.get(
+            "max_uses",
+            0
+        )
+
+        await message.answer(
+            f"""
+❌ <b>ЛИМИТ ИСПОЛЬЗОВАНИЙ ИСЧЕРПАН</b>
+
+Промокод <b>{html.escape(code)}</b>
+больше нельзя использовать.
+
+🔢 Максимум использований: <b>{max_uses}</b>
+
+Попробуй другой промокод.
+""",
+            reply_markup=back_to_menu(),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # -----------------------------------------------------
+    # ПРОМОКОД ДЕЙСТВИТЕЛЕН
+    # -----------------------------------------------------
+
+    discount = promo.get(
+        "discount",
+        0
+    )
+
     await state.update_data(
         promo_code=code,
         discount=discount
     )
 
     text = f"""
-✅ <b>ПРОМОКОД АКТИВИРОВАН!</b>
+✅ <b>ПРОМОКОД ДЕЙСТВИТЕЛЕН!</b>
 
 🎟️ Код: <b>{html.escape(code)}</b>
 🔥 Скидка: <b>{discount}%</b>
+"""
+
+    # Показываем срок
+    expires_at = promo.get("expires_at")
+
+    if expires_at:
+        text += (
+            f"📅 Действует до: <b>{html.escape(expires_at)}</b>\n"
+        )
+
+    # Показываем количество использований
+    max_uses = promo.get("max_uses")
+
+    if max_uses is not None:
+
+        uses = promo.get(
+            "uses",
+            0
+        )
+
+        remaining = int(max_uses) - int(uses)
+
+        text += (
+            f"🔢 Осталось использований: <b>{remaining}</b>\n"
+        )
+
+    text += """
+    
+━━━━━━━━━━━━━━
 
 Промокод сохранён и автоматически применится при оформлении заявки.
 
@@ -588,14 +785,62 @@ async def order(
 
     save_user(callback.from_user.id)
 
-    # Получаем сохранённый промокод ДО изменения состояния
     data = await state.get_data()
 
     promo_code = data.get("promo_code")
     discount = data.get("discount", 0)
 
-    # Очищаем состояние заявки,
-    # но сразу возвращаем данные промокода.
+    # Проверяем промокод ещё раз,
+    # если он был сохранён ранее.
+    if promo_code:
+
+        promo, status = check_promocode(
+            promo_code
+        )
+
+        if status != "active":
+
+            await state.clear()
+
+            if status == "expired":
+
+                await callback.message.edit_text(
+                    """
+⏰ <b>ПРОМОКОД ИСТЁК</b>
+
+Срок действия сохранённого промокода уже закончился.
+
+Активируй другой промокод или продолжи без скидки.
+""",
+                    reply_markup=main_menu(),
+                    parse_mode="HTML"
+                )
+
+                await callback.answer()
+
+                return
+
+            if status == "limit":
+
+                await callback.message.edit_text(
+                    """
+❌ <b>ЛИМИТ ИСПОЛЬЗОВАНИЙ ИСЧЕРПАН</b>
+
+К сожалению, этот промокод уже использовали максимальное количество раз.
+
+Активируй другой промокод или продолжи без скидки.
+""",
+                    reply_markup=main_menu(),
+                    parse_mode="HTML"
+                )
+
+                await callback.answer()
+
+                return
+
+            promo_code = None
+            discount = 0
+
     await state.clear()
 
     await state.update_data(
@@ -701,7 +946,44 @@ async def select_grade(
     promo_code = data.get("promo_code")
     discount = data.get("discount", 0)
 
-    # Проверяем, что скидка является числом
+    # Ещё одна проверка промокода.
+    if promo_code:
+
+        promo, status = check_promocode(
+            promo_code
+        )
+
+        if status != "active":
+
+            await state.update_data(
+                promo_code=None,
+                discount=0
+            )
+
+            promo_code = None
+            discount = 0
+
+            if status == "expired":
+
+                await callback.answer(
+                    "⏰ Промокод истёк. Скидка отменена.",
+                    show_alert=True
+                )
+
+            elif status == "limit":
+
+                await callback.answer(
+                    "❌ Лимит использований промокода исчерпан.",
+                    show_alert=True
+                )
+
+            else:
+
+                await callback.answer(
+                    "❌ Промокод больше недействителен.",
+                    show_alert=True
+                )
+
     try:
         discount = int(discount)
     except (ValueError, TypeError):
@@ -741,7 +1023,7 @@ async def select_grade(
     else:
 
         price_text = f"""
-💰 <b>Цена за проект под ключ: {base_price} ₽</b>
+💰 <b>Цена за проект под ключ: {final_price} ₽</b>
 """
 
     text = f"""
@@ -913,6 +1195,114 @@ async def send_order(
         "discount",
         0
     )
+
+    # -----------------------------------------------------
+    # ФИНАЛЬНАЯ ПРОВЕРКА ПРОМОКОДА
+    # -----------------------------------------------------
+
+    if promo_code and discount:
+
+        promo, status = check_promocode(
+            promo_code
+        )
+
+        if status == "expired":
+
+            await state.clear()
+
+            await callback.message.edit_text(
+                """
+⏰ <b>ПРОМОКОД ИСТЁК</b>
+
+Пока ты оформлял заявку, срок действия промокода закончился.
+
+Заявка <b>не отправлена</b>.
+
+Можешь оформить её заново без промокода или использовать другой действующий промокод.
+""",
+                reply_markup=main_menu(),
+                parse_mode="HTML"
+            )
+
+            await callback.answer(
+                "Промокод истёк.",
+                show_alert=True
+            )
+
+            return
+
+        if status == "limit":
+
+            await state.clear()
+
+            await callback.message.edit_text(
+                """
+❌ <b>ЛИМИТ ИСПОЛЬЗОВАНИЙ ИСЧЕРПАН</b>
+
+Пока ты оформлял заявку, свободные использования этого промокода закончились.
+
+Заявка <b>не отправлена</b>.
+
+Можешь оформить её заново без промокода или использовать другой промокод.
+""",
+                reply_markup=main_menu(),
+                parse_mode="HTML"
+            )
+
+            await callback.answer(
+                "Лимит промокода исчерпан.",
+                show_alert=True
+            )
+
+            return
+
+        if status != "active":
+
+            await state.clear()
+
+            await callback.message.edit_text(
+                """
+❌ <b>ПРОМОКОД НЕДЕЙСТВИТЕЛЕН</b>
+
+Этот промокод больше нельзя использовать.
+
+Заявка <b>не отправлена</b>.
+""",
+                reply_markup=main_menu(),
+                parse_mode="HTML"
+            )
+
+            await callback.answer(
+                "Промокод недействителен.",
+                show_alert=True
+            )
+
+            return
+
+        # Засчитываем использование только сейчас,
+        # когда пользователь реально отправляет заявку.
+        if not use_promocode(promo_code):
+
+            await state.clear()
+
+            await callback.message.edit_text(
+                """
+❌ <b>НЕ УДАЛОСЬ ПРИМЕНИТЬ ПРОМОКОД</b>
+
+К сожалению, этот промокод только что стал недействительным или закончились его использования.
+
+Заявка <b>не отправлена</b>.
+""",
+                reply_markup=main_menu(),
+                parse_mode="HTML"
+            )
+
+            await callback.answer(
+                "Промокод больше недействителен.",
+                show_alert=True
+            )
+
+            return
 
     user = callback.from_user
 
@@ -1717,23 +2107,73 @@ async def admin_promos(callback: CallbackQuery):
 
         for code, promo in promos.items():
 
-            status = (
-                "🟢 активен"
-                if promo.get("active", True)
-                else "🔴 выключен"
+            status = get_promo_status(promo)
+
+            if status == "active":
+                status_text = "🟢 активен"
+
+            elif status == "expired":
+                status_text = "⏰ истёк"
+
+            elif status == "limit":
+                status_text = "🔴 лимит исчерпан"
+
+            elif status == "disabled":
+                status_text = "🔴 выключен"
+
+            else:
+                status_text = "⚪ неизвестно"
+
+            discount = promo.get(
+                "discount",
+                0
             )
 
+            uses = promo.get(
+                "uses",
+                0
+            )
+
+            max_uses = promo.get(
+                "max_uses"
+            )
+
+            expires_at = promo.get(
+                "expires_at"
+            )
+
+            # Информация о лимите
+            if max_uses is None:
+                uses_text = f"{uses}/∞"
+
+            else:
+                uses_text = (
+                    f"{uses}/{max_uses}"
+                )
+
+            # Информация о сроке
+            if expires_at:
+                expiration_text = (
+                    f"\n📅 До: <b>{html.escape(expires_at)}</b>"
+                )
+            else:
+                expiration_text = (
+                    "\n📅 До: <b>бессрочно</b>"
+                )
+
             promo_text += (
-                f"🎟️ <b>{html.escape(code)}</b> — "
-                f"{promo.get('discount', 0)}% — {status}\n"
+                f"🎟️ <b>{html.escape(code)}</b>\n"
+                f"🔥 Скидка: <b>{discount}%</b>\n"
+                f"🔢 Использований: <b>{uses_text}</b>"
+                f"{expiration_text}\n"
+                f"📌 Статус: <b>{status_text}</b>\n"
+                f"━━━━━━━━━━━━━━\n"
             )
 
     text = f"""
 🎟️ <b>ПРОМОКОДЫ</b>
 
 {promo_text}
-
-━━━━━━━━━━━━━━
 
 Здесь можно создавать новые промокоды.
 """
@@ -1788,6 +2228,8 @@ async def admin_create_promo(
         """
 ➕ <b>СОЗДАНИЕ ПРОМОКОДА</b>
 
+<b>Шаг 1 из 4</b>
+
 Отправь код промокода.
 
 Например:
@@ -1801,6 +2243,10 @@ async def admin_create_promo(
 
     await callback.answer()
 
+
+# =========================================================
+# КОД ПРОМОКОДА
+# =========================================================
 
 @dp.message(AdminPromoState.waiting_for_code)
 async def receive_admin_promo_code(
@@ -1848,6 +2294,23 @@ async def receive_admin_promo_code(
 
         return
 
+    promos = load_promocodes()
+
+    if code in promos:
+
+        await message.answer(
+            f"""
+❌ <b>Такой промокод уже существует</b>
+
+Промокод <b>{html.escape(code)}</b> уже есть в системе.
+
+Введи другой код.
+""",
+            parse_mode="HTML"
+        )
+
+        return
+
     await state.update_data(
         new_promo_code=code
     )
@@ -1859,6 +2322,8 @@ async def receive_admin_promo_code(
     await message.answer(
         f"""
 🎟️ Код: <b>{html.escape(code)}</b>
+
+<b>Шаг 2 из 4</b>
 
 Теперь отправь размер скидки в процентах.
 
@@ -1873,6 +2338,10 @@ async def receive_admin_promo_code(
         parse_mode="HTML"
     )
 
+
+# =========================================================
+# СКИДКА
+# =========================================================
 
 @dp.message(AdminPromoState.waiting_for_discount)
 async def receive_admin_promo_discount(
@@ -1924,26 +2393,219 @@ async def receive_admin_promo_discount(
 
         return
 
+    await state.update_data(
+        new_promo_discount=discount
+    )
+
+    await state.set_state(
+        AdminPromoState.waiting_for_expiration
+    )
+
+    await message.answer(
+        """
+📅 <b>Шаг 3 из 4</b>
+
+Теперь укажи срок действия промокода.
+
+Формат:
+
+<b>ДД.ММ.ГГГГ ЧЧ:ММ</b>
+
+Например:
+
+<b>31.08.2026 23:59</b>
+
+Промокод будет действовать до указанной даты и времени.
+
+❌ Для отмены напиши: <b>отмена</b>
+""",
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# СРОК ДЕЙСТВИЯ
+# =========================================================
+
+@dp.message(AdminPromoState.waiting_for_expiration)
+async def receive_admin_promo_expiration(
+    message: Message,
+    state: FSMContext
+):
+
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.text:
+
+        await message.answer(
+            "🙂 Отправь дату обычным текстом."
+        )
+
+        return
+
+    if message.text.lower().strip() == "отмена":
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Создание промокода отменено.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    expiration_text = message.text.strip()
+
+    try:
+
+        expiration = datetime.strptime(
+            expiration_text,
+            "%d.%m.%Y %H:%M"
+        )
+
+    except ValueError:
+
+        await message.answer(
+            """
+❌ <b>Неверный формат даты.</b>
+
+Используй формат:
+
+<b>ДД.ММ.ГГГГ ЧЧ:ММ</b>
+
+Например:
+
+<b>31.08.2026 23:59</b>
+""",
+            parse_mode="HTML"
+        )
+
+        return
+
+    if expiration <= datetime.now():
+
+        await message.answer(
+            """
+❌ Эта дата уже прошла.
+
+Укажи дату и время в будущем.
+""",
+            parse_mode="HTML"
+        )
+
+        return
+
+    await state.update_data(
+        new_promo_expires_at=expiration_text
+    )
+
+    await state.set_state(
+        AdminPromoState.waiting_for_max_uses
+    )
+
+    await message.answer(
+        """
+🔢 <b>Шаг 4 из 4</b>
+
+Теперь укажи максимальное количество использований промокода.
+
+Например:
+
+<b>50</b>
+
+Это значит, что промокод смогут использовать максимум 50 раз.
+
+❌ Для отмены напиши: <b>отмена</b>
+""",
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# МАКСИМАЛЬНОЕ КОЛИЧЕСТВО ИСПОЛЬЗОВАНИЙ
+# =========================================================
+
+@dp.message(AdminPromoState.waiting_for_max_uses)
+async def receive_admin_promo_max_uses(
+    message: Message,
+    state: FSMContext
+):
+
+    if not is_admin(message.from_user.id):
+        return
+
+    if not message.text:
+
+        await message.answer(
+            "🙂 Отправь целое число больше 0."
+        )
+
+        return
+
+    if message.text.lower().strip() == "отмена":
+
+        await state.clear()
+
+        await message.answer(
+            "❌ Создание промокода отменено.",
+            reply_markup=admin_menu()
+        )
+
+        return
+
+    try:
+
+        max_uses = int(
+            message.text.strip()
+        )
+
+    except ValueError:
+
+        await message.answer(
+            "❌ Введи целое число больше 0."
+        )
+
+        return
+
+    if max_uses < 1:
+
+        await message.answer(
+            "❌ Количество использований должно быть больше 0."
+        )
+
+        return
+
     data = await state.get_data()
 
     code = data.get(
         "new_promo_code"
     )
 
-    if not code:
+    discount = data.get(
+        "new_promo_discount"
+    )
+
+    expires_at = data.get(
+        "new_promo_expires_at"
+    )
+
+    if not code or discount is None or not expires_at:
 
         await state.clear()
 
         await message.answer(
-            "❌ Ошибка: промокод не найден.",
+            "❌ Ошибка: данные промокода потеряны.",
             reply_markup=admin_menu()
         )
 
         return
 
     create_promocode(
-        code,
-        discount
+        code=code,
+        discount=discount,
+        expires_at=expires_at,
+        max_uses=max_uses
     )
 
     await state.clear()
@@ -1956,7 +2618,16 @@ async def receive_admin_promo_discount(
 
 🔥 Скидка: <b>{discount}%</b>
 
-Теперь пользователи смогут его активировать.
+📅 Действует до:
+<b>{html.escape(expires_at)}</b>
+
+🔢 Максимум использований:
+<b>{max_uses}</b>
+
+🔢 Уже использовано:
+<b>0/{max_uses}</b>
+
+🟢 Статус: <b>активен</b>
 """,
         reply_markup=admin_menu(),
         parse_mode="HTML"
