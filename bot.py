@@ -143,7 +143,7 @@ def main_menu():
 
 
 # =========================================================
-# КНОПКИ НАЗАД
+# КНОПКА НАЗАД
 # =========================================================
 
 def back_to_menu():
@@ -332,6 +332,11 @@ async def admin_stats(callback: CallbackQuery):
     users = load_users()
     orders = load_orders()
 
+    average = round(
+        len(orders) / len(users),
+        2
+    ) if users else 0
+
     text = f"""
 📊 <b>СТАТИСТИКА</b>
 
@@ -340,7 +345,7 @@ async def admin_stats(callback: CallbackQuery):
 📚 Всего заявок: {len(orders)}
 
 💬 Среднее количество заявок на пользователя:
-{round(len(orders) / len(users), 2) if users else 0}
+{average}
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -426,6 +431,7 @@ async def admin_orders(callback: CallbackQuery):
 
 Пока заявок нет.
 """
+
     else:
         recent_orders = orders[-5:]
         recent_orders.reverse()
@@ -446,10 +452,11 @@ async def admin_orders(callback: CallbackQuery):
 
             text += f"""
 <b>{number}. {safe_name}</b>
+
 🔗 {safe_username}
 🆔 {order['user_id']}
 
-{safe_text}
+📄 {safe_text}
 
 ━━━━━━━━━━━━━━
 """
@@ -706,27 +713,13 @@ async def order(
     text = """
 📚 <b>ОФОРМЛЕНИЕ ЗАЯВКИ</b>
 
-Давай быстро разберёмся, что тебе нужно.
+Напиши одним сообщением всю информацию о твоём проекте, которую считаешь важной.
 
-Отправь одним сообщением:
+Например, можешь указать тему, класс, предмет, сроки, что именно тебе нужно и любые дополнительные требования.
 
-🎓 Класс / курс
-📖 Предмет
-📝 Тема проекта
-📅 Когда нужна работа
-📦 Что тебе требуется
+💡 Чем подробнее ты опишешь задачу, тем проще будет сразу разобраться с проектом.
 
-<b>Например:</b>
-
-10 класс
-Физика
-Электромагнитная индукция
-Нужно к 25 августа
-Проект + презентация + речь
-
-После этого я покажу тебе заявку перед отправкой.
-
-⚠️ Пока ты не нажмёшь «Отправить заявку», она никуда не уйдёт.
+После этого я покажу твоё сообщение перед отправкой.
 """
 
     await callback.message.edit_text(
@@ -753,7 +746,7 @@ async def receive_order(
     if not message.text:
 
         await message.answer(
-            "🙂 Отправь, пожалуйста, информацию обычным текстовым сообщением.",
+            "🙂 Отправь, пожалуйста, информацию о проекте обычным текстовым сообщением.",
             reply_markup=order_back_button()
         )
 
@@ -783,7 +776,7 @@ async def receive_order(
 
 ━━━━━━━━━━━━━━
 
-📄 <b>Данные проекта:</b>
+📄 <b>Информация о проекте:</b>
 
 {safe_order}
 
@@ -792,8 +785,6 @@ async def receive_order(
 Всё верно?
 
 Если всё правильно — нажми «Отправить заявку».
-
-⚠️ До этого момента заявка не отправлена.
 """
 
     await state.set_state(
@@ -908,15 +899,9 @@ async def edit_order(
     text = """
 ✏️ <b>ЗАПОЛНИМ ЗАНОВО</b>
 
-Отправь одним сообщением:
+Напиши одним сообщением всю информацию о твоём проекте.
 
-🎓 Класс / курс
-📖 Предмет
-📝 Тема проекта
-📅 Когда нужна работа
-📦 Что тебе нужно
-
-Я снова покажу тебе заявку перед отправкой.
+Можешь указать тему, класс, предмет, сроки, требования и любые дополнительные детали.
 """
 
     await callback.message.edit_text(
@@ -961,61 +946,7 @@ async def cancel_order(
 
 
 # =========================================================
-# ЦЕНЫ
-# =========================================================
-
-@dp.callback_query(F.data == "prices")
-async def prices(callback: CallbackQuery):
-
-    save_user(callback.from_user.id)
-
-    text = """
-💰 <b>ЦЕНЫ SERGEY PROJECT</b>
-
-🎓 <b>9 класс</b>
-<b>800–1000 ₽</b>
-
-🎓 <b>10 класс</b>
-<b>1000–1300 ₽</b>
-
-━━━━━━━━━━━━━━
-
-📌 Стоимость зависит от объёма и сложности работы.
-
-💼 Указанный диапазон — это <b>полная стоимость проекта под ключ</b>, а не цена за отдельную часть работы.
-
-⏰ <b>Важно:</b> чем ближе срок сдачи проекта, тем выше может быть стоимость.
-
-Поэтому лучше оформить заявку заранее.
-
-📚 Точную стоимость конкретного проекта можно определить после уточнения темы, объёма, требований и срока сдачи.
-"""
-
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="📚 Оформить заявку",
-        callback_data="order"
-    )
-
-    keyboard.button(
-        text="🏠 Главное меню",
-        callback_data="back"
-    )
-
-    keyboard.adjust(1)
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=keyboard.as_markup(),
-        parse_mode="HTML"
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ЧТО ВХОДИТ
+# ЧТО ВХОДИТ В РАБОТУ
 # =========================================================
 
 @dp.callback_query(F.data == "included")
@@ -1043,6 +974,58 @@ async def included(callback: CallbackQuery):
 💡 Наполнение заказа зависит от того, что именно тебе понадобится.
 
 Если хочешь обсудить свой проект — нажми кнопку ниже.
+"""
+
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="📚 Оформить заявку",
+        callback_data="order"
+    )
+
+    keyboard.button(
+        text="🏠 Главное меню",
+        callback_data="back"
+    )
+
+    keyboard.adjust(1)
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard.as_markup(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ЦЕНЫ
+# =========================================================
+
+@dp.callback_query(F.data == "prices")
+async def prices(callback: CallbackQuery):
+
+    save_user(callback.from_user.id)
+
+    text = """
+💰 <b>ЦЕНЫ</b>
+
+📘 <b>9 класс</b>
+<b>800–1000 ₽</b>
+
+📗 <b>10 класс</b>
+<b>1000–1300 ₽</b>
+
+━━━━━━━━━━━━━━
+
+💡 Цена зависит от объёма и сложности работы.
+
+Указанный диапазон — это <b>точная цена за проект под ключ</b> в зависимости от конкретной работы.
+
+⏰ Также учитывай: чем ближе дата сдачи проекта, тем выше может быть цена.
+
+📌 Чтобы узнать точную стоимость именно твоего проекта, просто оставь заявку с подробной информацией.
 """
 
     keyboard = InlineKeyboardBuilder()
@@ -1379,6 +1362,8 @@ async def back(
 ):
 
     await state.clear()
+
+    save_user(callback.from_user.id)
 
     text = """
 🎓 <b>SERGEY PROJECT</b>
