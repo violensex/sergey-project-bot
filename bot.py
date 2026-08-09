@@ -26,12 +26,16 @@ dp = Dispatcher(storage=MemoryStorage())
 
 
 # =========================================================
-# СОСТОЯНИЯ ЗАЯВКИ
+# СОСТОЯНИЯ
 # =========================================================
 
 class OrderState(StatesGroup):
     waiting_for_order = State()
     confirmation = State()
+
+
+class ContactState(StatesGroup):
+    waiting_for_message = State()
 
 
 # =========================================================
@@ -72,7 +76,7 @@ def main_menu():
 
 
 # =========================================================
-# ТОЛЬКО КНОПКА "НАЗАД"
+# КНОПКА НАЗАД В ГЛАВНОЕ МЕНЮ
 # =========================================================
 
 def back_to_menu():
@@ -87,7 +91,22 @@ def back_to_menu():
 
 
 # =========================================================
-# КНОПКИ ПОДТВЕРЖДЕНИЯ ЗАЯВКИ
+# КНОПКА НАЗАД ПРИ ЗАПОЛНЕНИИ
+# =========================================================
+
+def order_back_button():
+    keyboard = InlineKeyboardBuilder()
+
+    keyboard.button(
+        text="🏠 Назад в главное меню",
+        callback_data="back"
+    )
+
+    return keyboard.as_markup()
+
+
+# =========================================================
+# ПОДТВЕРЖДЕНИЕ ЗАЯВКИ
 # =========================================================
 
 def order_confirmation():
@@ -109,21 +128,6 @@ def order_confirmation():
     )
 
     keyboard.adjust(1)
-
-    return keyboard.as_markup()
-
-
-# =========================================================
-# КНОПКА НАЗАД ВО ВРЕМЯ ЗАПОЛНЕНИЯ
-# =========================================================
-
-def order_back_button():
-    keyboard = InlineKeyboardBuilder()
-
-    keyboard.button(
-        text="🏠 Назад в главное меню",
-        callback_data="back"
-    )
 
     return keyboard.as_markup()
 
@@ -344,13 +348,8 @@ async def receive_order(message: Message, state: FSMContext):
 
     user = message.from_user
 
-    if user.username:
-        username = f"@{user.username}"
-    else:
-        username = "не указан"
+    username = f"@{user.username}" if user.username else "не указан"
 
-    # Экранируем пользовательский текст,
-    # чтобы HTML-разметка бота не ломалась.
     safe_name = html.escape(user.full_name)
     safe_username = html.escape(username)
     safe_order = html.escape(message.text)
@@ -386,7 +385,7 @@ async def receive_order(message: Message, state: FSMContext):
 
 
 # =========================================================
-# ОТПРАВКА ЗАЯВКИ АДМИНИСТРАТОРУ
+# ОТПРАВКА ЗАЯВКИ
 # =========================================================
 
 @dp.callback_query(
@@ -403,10 +402,7 @@ async def send_order(callback: CallbackQuery, state: FSMContext):
 
     user = callback.from_user
 
-    if user.username:
-        username = f"@{user.username}"
-    else:
-        username = "не указан"
+    username = f"@{user.username}" if user.username else "не указан"
 
     safe_name = html.escape(user.full_name)
     safe_username = html.escape(username)
@@ -432,7 +428,6 @@ async def send_order(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
 
-    # Очищаем состояние после отправки.
     await state.clear()
 
     text = """
@@ -445,8 +440,6 @@ async def send_order(callback: CallbackQuery, state: FSMContext):
 🤝 Спасибо, что обратился в SERGEY PROJECT!
 """
 
-    # После отправки показываем ТОЛЬКО кнопку
-    # возврата в главное меню.
     await callback.message.edit_text(
         text,
         reply_markup=back_to_menu(),
@@ -508,7 +501,7 @@ async def cancel_order(callback: CallbackQuery, state: FSMContext):
 
 Ничего страшного 🙂
 
-Если передумаешь, всегда сможешь оформить новую заявку через главное меню.
+Если захочешь оформить её позже, просто вернись в главное меню.
 """
 
     await callback.message.edit_text(
@@ -525,28 +518,29 @@ async def cancel_order(callback: CallbackQuery, state: FSMContext):
 # =========================================================
 
 @dp.callback_query(F.data == "contact")
-async def contact(callback: CallbackQuery):
+async def contact(callback: CallbackQuery, state: FSMContext):
+
+    await state.clear()
+    await state.set_state(ContactState.waiting_for_message)
 
     text = """
 📞 <b>СВЯЗАТЬСЯ С SERGEY PROJECT</b>
 
-Есть вопрос?
+Есть вопрос или хочешь что-то уточнить?
 
-Напиши его сюда — постараюсь помочь.
+Просто напиши сообщение сюда 👇
 
-Если вопрос связан с конкретным проектом, можешь сразу указать предмет и тему. Так будет проще быстро разобраться.
+💬 Можешь рассказать о своей ситуации своими словами — без каких-либо шаблонов.
 
-💬 Не стесняйся писать — общаемся нормально, без лишней официальности 🙂
+После отправки твоё сообщение будет передано мне.
 """
 
     keyboard = InlineKeyboardBuilder()
 
     keyboard.button(
-        text="🏠 Главное меню",
+        text="🏠 Назад в главное меню",
         callback_data="back"
     )
-
-    keyboard.adjust(1)
 
     await callback.message.edit_text(
         text,
@@ -558,14 +552,74 @@ async def contact(callback: CallbackQuery):
 
 
 # =========================================================
+# ПОЛУЧЕНИЕ СООБЩЕНИЯ ЧЕРЕЗ "СВЯЗАТЬСЯ"
+# =========================================================
+
+@dp.message(ContactState.waiting_for_message)
+async def receive_contact_message(
+    message: Message,
+    state: FSMContext
+):
+
+    if not message.text:
+        await message.answer(
+            "🙂 Напиши, пожалуйста, сообщение обычным текстом.",
+            reply_markup=order_back_button()
+        )
+        return
+
+    user = message.from_user
+
+    username = f"@{user.username}" if user.username else "не указан"
+
+    safe_name = html.escape(user.full_name)
+    safe_username = html.escape(username)
+    safe_message = html.escape(message.text)
+
+    admin_text = f"""
+💬 <b>НОВОЕ СООБЩЕНИЕ</b>
+
+👤 <b>От:</b> {safe_name}
+🔗 <b>Username:</b> {safe_username}
+🆔 <b>Telegram ID:</b> {user.id}
+
+━━━━━━━━━━━━━━
+
+💬 <b>Сообщение:</b>
+
+{safe_message}
+"""
+
+    await bot.send_message(
+        ADMIN_ID,
+        admin_text,
+        parse_mode="HTML"
+    )
+
+    await state.clear()
+
+    text = """
+✅ <b>СООБЩЕНИЕ ОТПРАВЛЕНО!</b>
+
+Я получил твоё сообщение и скоро отвечу тебе.
+
+🤝 Спасибо, что написал!
+"""
+
+    await message.answer(
+        text,
+        reply_markup=back_to_menu(),
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
 # ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
 # =========================================================
 
 @dp.callback_query(F.data == "back")
 async def back(callback: CallbackQuery, state: FSMContext):
 
-    # Если пользователь находился в оформлении заявки,
-    # все введённые данные очищаются.
     await state.clear()
 
     text = """
@@ -605,7 +659,7 @@ async def random_message(message: Message):
 
 📚 <b>«Оформить заявку»</b>
 
-А если у тебя просто вопрос — можешь выбрать раздел «Связаться».
+А если у тебя просто вопрос — выбери раздел «Связаться».
 """
 
     await message.answer(
@@ -616,7 +670,7 @@ async def random_message(message: Message):
 
 
 # =========================================================
-# ЗАПУСК БОТА
+# ЗАПУСК
 # =========================================================
 
 async def main():
